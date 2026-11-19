@@ -1,0 +1,120 @@
+---
+title: "Claustrum Connectivity in Prematurity PCA of CP"
+author: "Jil Wendt"
+format: html
+editor: visual
+---
+
+PCA of CP across the 22 target ROIs, separately in preterm- and full-term-born adults (BLS cohort).
+
+- Input: `data/adults_harmonized.csv`
+- Outputs (`outputs/figures`):
+  - `PCA_scree_CP_<date>.png`: Supplementary Figure S2
+  - `PCA_contributions_CP_<date>.png`: Supplementary Figure S3
+  - `PCA_scree_CP_FT_<date>.png`, `PCA_contributions_CP_FT_<date>.png`: FT group
+
+# Setup
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(here)
+library(factoextra)
+
+fig_dir <- here::here("outputs", "figures")
+```
+
+```{r}
+save_plot_png <- function(plot, filename, width = 9, height = 7, dpi = 300, bg = "white") {
+  outfile <- file.path(
+    fig_dir,
+    paste0(filename, "_", format(Sys.Date()), ".png")
+  )
+  ggplot2::ggsave(outfile, plot = plot, width = width, height = height, dpi = dpi, bg = "white")
+  message("Plot saved to: ", outfile)
+  return(outfile)
+}
+```
+
+## Load data
+
+```{r}
+dat <- read_delim(
+  here("data", "adults_harmonized.csv"),
+  delim = ";",
+  trim_ws = TRUE,
+  locale = locale(decimal_mark = ","),
+  na = c(""," ","NA", "NaN", "n/a", ".", "-9999","999"),
+  col_types = cols(
+    Subject = col_character(),
+    ID      = col_character()
+  ),
+  guess_max = 10000
+) |> janitor::clean_names()
+
+dat <- dat %>%
+  mutate(
+    group = factor(case_when(
+      groupcode == 0 ~ "FT",
+      groupcode == 1 ~ "PT",
+      TRUE ~ NA_character_
+    ), levels = c("FT", "PT"))
+  )
+
+final_dat_CP <- dat %>%
+  dplyr::select(-starts_with("cd_"), -all_of("id"))
+
+cp_vars <- grep("^cp_", names(final_dat_CP), value = TRUE)
+
+dat_PT <- final_dat_CP %>%
+  dplyr::filter(group == "PT")
+
+dat_FT <- final_dat_CP %>%
+  dplyr::filter(group == "FT")
+```
+
+# PCA in PT (Figures S2, S3)
+
+```{r}
+cp_base <- dat_PT %>%
+  dplyr::select(subject, dplyr::all_of(cp_vars)) %>%
+  dplyr::mutate(dplyr::across(-subject, ~ if (is.factor(.)) suppressWarnings(as.numeric(as.character(.))) else as.numeric(.)))
+
+cp_complete <- cp_base %>% tidyr::drop_na()
+
+pca_cp <- prcomp(cp_complete %>% dplyr::select(-subject), scale. = TRUE, center = TRUE)
+
+summary(pca_cp)
+
+scree_PCA_CP <- fviz_eig(pca_cp, addlabels = TRUE, barfill = "slategray", barcolor = "white") +
+  labs(title = "PCA on CP (PT only)",
+    subtitle = "Bars: variance per component | Red line: cumulative variance")
+save_plot_png(scree_PCA_CP, "PCA_scree_CP")
+
+contr_PCA_CP <- (fviz_pca_var(pca_cp, col.var = "contrib", repel = TRUE))
+save_plot_png(contr_PCA_CP, "PCA_contributions_CP")
+```
+
+# PCA in FT
+
+```{r}
+cp_base_FT <- dat_FT %>%
+  dplyr::select(subject, dplyr::all_of(cp_vars)) %>%
+  dplyr::mutate(dplyr::across(-subject, ~ if (is.factor(.)) suppressWarnings(as.numeric(as.character(.))) else as.numeric(.)))
+
+cp_complete_FT <- cp_base_FT %>% tidyr::drop_na()
+
+pca_cp_FT <- prcomp(cp_complete_FT %>% dplyr::select(-subject), scale. = TRUE, center = TRUE)
+
+summary(pca_cp_FT)
+
+scree_pca_cp_FT <- fviz_eig(pca_cp_FT, addlabels = TRUE, barfill = "paleturquoise4", barcolor = "white") +
+  labs(title = "PCA on CP (FT only)",
+    subtitle = "Bars: variance per component | Red line: cumulative variance")
+save_plot_png(scree_pca_cp_FT, "PCA_scree_CP_FT")
+
+contr_pca_cp_FT <- (fviz_pca_var(pca_cp_FT, col.var = "contrib", repel = TRUE))
+save_plot_png(contr_pca_cp_FT, "PCA_contributions_CP_FT")
+```

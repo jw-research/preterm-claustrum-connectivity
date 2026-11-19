@@ -1,0 +1,23 @@
+Type;ROI;roi_code;n_FT;mean_sd_FT;min_FT;max_FT;range_FT;n_PT;mean_sd_PT;min_PT;max_PT;range_PT;t(df);p
+Associative;Occipital Associative (L);cd_ac_occ_l_ipsi;81;0.556±0.299;0.061;1.627;1.566;65;0.394±0.211;0.073;1.117;1.045;3.837(141.84)*;<.001
+Associative;Occipital Associative (R);cd_ac_occ_r_ipsi;81;0.796±0.323;0.259;1.585;1.327;65;0.557±0.279;0.128;1.477;1.349;4.724(144);<.001
+Associative;Parietal Associative (L);cd_ac_par_l_ipsi;81;0.983±0.375;0.278;2.031;1.753;65;0.754±0.334;0.174;2.034;1.860;3.845(144);<.001
+Associative;Parietal Associative (R);cd_ac_par_r_ipsi;81;1.100±0.369;0.354;2.191;1.837;65;0.975±0.382;0.133;2.294;2.161;2.000(144);0.047
+Associative;Prefrontal Associative (L);cd_ac_pfc_l_ipsi;81;1.486±0.260;0.926;2.166;1.239;65;1.464±0.291;0.966;2.296;1.329;0.475(144);0.635
+Associative;Prefrontal Associative (R);cd_ac_pfc_r_ipsi;81;1.726±0.298;1.079;2.634;1.555;65;1.685±0.307;1.023;2.493;1.470;0.803(144);0.424
+Associative;Temporal Associative (L);cd_ac_temp_l_ipsi;81;1.298±0.439;0.532;2.424;1.892;65;1.362±0.427;0.561;2.853;2.292;-0.889(144);0.375
+Associative;Temporal Associative (R);cd_ac_temp_r_ipsi;81;1.541±0.475;0.905;3.128;2.223;65;1.620±0.401;0.812;2.598;1.786;-1.062(144);0.290
+Primary;Primary Auditory (L);cd_pc_aud_l_ipsi;81;1.282±0.935;0.035;4.032;3.997;65;1.176±1.002;0.061;3.780;3.720;0.665(144);0.507
+Primary;Primary Auditory (R);cd_pc_aud_r_ipsi;81;0.888±0.907;-0.219;4.691;4.910;65;0.843±0.958;-0.025;4.882;4.907;0.296(144);0.768
+Primary;Primary Motor (L);cd_pc_mot_l_ipsi;81;0.925±0.707;-0.007;3.386;3.394;65;0.918±0.869;0.005;4.508;4.503;0.050(144);0.960
+Primary;Primary Motor (R);cd_pc_mot_r_ipsi;81;0.985±0.880;-0.002;3.833;3.836;65;1.273±1.006;-0.120;3.936;4.055;-1.838(144);0.068
+Primary;Primary Somatosensory (L);cd_pc_sens_l_ipsi;81;0.952±0.556;0.084;2.535;2.450;65;0.764±0.548;0.051;2.113;2.062;2.040(144);0.043
+Primary;Primary Somatosensory (R);cd_pc_sens_r_ipsi;81;1.344±0.812;0.038;3.827;3.789;65;1.246±0.720;0.138;3.242;3.104;0.763(144);0.447
+Primary;Primary Visual (L);cd_pc_vis_l_ipsi;81;0.344±0.306;-0.002;1.335;1.337;65;0.227±0.242;-0.093;1.138;1.231;2.517(144);0.013
+Primary;Primary Visual (R);cd_pc_vis_r_ipsi;81;0.920±0.732;0.040;3.862;3.823;65;0.590±0.572;-0.068;2.729;2.798;3.063(143.91)*;0.003
+Limbic;Anterior Cingulate (L);cd_c_ant_l_ipsi;81;0.215±0.177;-0.007;0.937;0.944;65;0.149±0.138;0.005;0.740;0.734;2.535(143.86)*;0.012
+Limbic;Anterior Cingulate (R);cd_c_ant_r_ipsi;81;0.221±0.219;-0.030;1.207;1.237;65;0.167±0.165;-0.004;0.643;0.647;1.693(143.50)*;0.093
+Limbic;Hippocampus (L);cd_sc_hip_l_ipsi;81;0.212±0.155;-0.012;0.774;0.786;65;0.160±0.159;0.009;0.947;0.938;2.003(144);0.047
+Limbic;Hippocampus (R);cd_ac_hip_r_ipsi;81;0.419±0.493;-0.082;2.368;2.451;65;0.315±0.321;-0.002;1.391;1.393;1.528(138.53)*;0.129
+Limbic;Posterior Cingulate (L);cd_c_pos_l_ipsi;81;0.179±0.158;-0.043;0.633;0.677;65;0.135±0.165;-0.034;0.816;0.850;1.647(144);0.102
+Limbic;Posterior Cingulate (R);cd_c_pos_r_ipsi;81;0.267±0.266;-0.011;1.542;1.553;65;0.144±0.144;0.007;0.731;0.724;3.568(127.93)*;<.001

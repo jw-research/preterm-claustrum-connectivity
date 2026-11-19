@@ -1,0 +1,6 @@
+analysis;family;n_tests
+A1 prematurity;A1: birth_age;22
+A1 prematurity;A1: birth_weight;22
+A2 SES;A2: ses_score;22
+A3 cognition 18mo;A3: bsid_cog_composite;22
+GC group comparison;GC: group;22

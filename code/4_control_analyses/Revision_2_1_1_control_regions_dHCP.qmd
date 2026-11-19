@@ -1,0 +1,462 @@
+---
+title: "Claustrum Connectivity in Prematurity Specificity Analyses (dHCP)"
+author: "Jil Wendt"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+Specificity analyses for the neonatal group differences in claustrum CP (dHCP cohort; Supplementary control and robustness analyses, section 2). The group-comparison ANCOVA (CP \~ group + age at scan + sex) is repeated with additional covariates: (A) CP from the ipsilateral insula and/or putamen seed to the same target, (B) claustrum seed and/or target volume, (C) seed-to-target distance. FDR correction across the 22 target ROIs within each model. Group differences in insula- and putamen-seeded CP are tested with the same ANCOVA.
+
+- Input: `data/dHCP_CP_control_volumes_distance.csv` (CP from claustrum, insula and putamen seeds, seed and target volumes, seed-to-target distances, demographics)
+- Outputs (`outputs/tables`):
+  - `Revision_control_group_diff_dHCP_<date>.csv`: insula and putamen CP, group comparison (results/control_seeds_groupcomp_dHCP.csv)
+  - `Revision_specificity_ANCOVA_CP_dHCP_<date>.csv`, `Revision_specificity_survival_dHCP_<date>.csv`: control-seed models (results/specificity_seed_dHCP.csv, specificity_seed_survival_dHCP.csv)
+  - `Revision_specificity_volume_ANCOVA_CP_dHCP_<date>.csv`, `Revision_specificity_volume_survival_dHCP_<date>.csv`: volume models (results/specificity_volume_dHCP.csv, specificity_volume_survival_dHCP.csv)
+  - `Revision_specificity_distance_ANCOVA_CP_dHCP_<date>.csv`, `Revision_specificity_distance_survival_dHCP_<date>.csv`: distance models (results/specificity_distance_dHCP.csv, specificity_distance_survival_dHCP.csv)
+
+# 1 Setup
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(here)
+library(car)
+library(emmeans)
+
+tab_dir <- here::here("outputs", "tables")
+```
+
+### Lookup tables for variable names
+
+```{r}
+roi_labels <- c(
+  l_claustrum_ac_occ_l  = "Occipital Associative (L)",
+  r_claustrum_ac_occ_r  = "Occipital Associative (R)",
+  l_claustrum_ac_par_l  = "Parietal Associative (L)",
+  r_claustrum_ac_par_r  = "Parietal Associative (R)",
+  l_claustrum_ac_pfc_l  = "Prefrontal Associative (L)",
+  r_claustrum_ac_pfc_r  = "Prefrontal Associative (R)",
+  l_claustrum_ac_temp_l = "Temporal Associative (L)",
+  r_claustrum_ac_temp_r = "Temporal Associative (R)",
+  l_claustrum_c_pos_l   = "Posterior Cingulate (L)",
+  r_claustrum_c_pos_r   = "Posterior Cingulate (R)",
+  l_claustrum_c_ant_l   = "Anterior Cingulate (L)",
+  r_claustrum_c_ant_r   = "Anterior Cingulate (R)",
+  l_claustrum_pc_aud_l  = "Primary Auditory (L)",
+  r_claustrum_pc_aud_r  = "Primary Auditory (R)",
+  l_claustrum_pc_mot_l  = "Primary Motor (L)",
+  r_claustrum_pc_mot_r  = "Primary Motor (R)",
+  l_claustrum_pc_sens_l = "Primary Somatosensory (L)",
+  r_claustrum_pc_sens_r = "Primary Somatosensory (R)",
+  l_claustrum_pc_vis_l  = "Primary Visual (L)",
+  r_claustrum_pc_vis_r  = "Primary Visual (R)",
+  l_claustrum_sc_hip_l  = "Hippocampus (L)",
+  r_claustrum_sc_hip_r  = "Hippocampus (R)"
+)
+
+# insula / putamen labels derived from the claustrum labels
+roi_labels_ctrl <- c(
+  setNames(paste("Insula to",  roi_labels), sub("_claustrum_", "_insula_",  names(roi_labels))),
+  setNames(paste("Putamen to", roi_labels), sub("_claustrum_", "_putamen_", names(roi_labels)))
+)
+roi_labels_all <- c(roi_labels, roi_labels_ctrl)
+```
+
+## Load data
+
+```{r}
+dat_dHCP <- read_delim(
+  here::here("data", "dHCP_CP_control_volumes_distance.csv"),
+  delim = ";",
+  trim_ws = TRUE,
+  locale = locale(decimal_mark = ","),
+  na = c(""," ","NA", "NaN", "n/a", "."),
+  col_types = cols(
+    Subject_ID = col_character(),
+    Session_ID = col_character()
+  ),
+  guess_max = 10000
+) |> janitor::clean_names()
+
+# --- recode and name important factors ---
+dat_dHCP <- dat_dHCP %>%
+  mutate(
+    group = factor(case_when(
+      group == "term" ~ "FT",
+      group == "pre"  ~ "PT",
+      TRUE ~ NA_character_
+    ), levels = c("FT", "PT")),
+    sex = factor(sex, levels = c("Female", "Male"))
+  )
+
+# --- variable sets ---
+cp_vars   <- grep("_claustrum_",            names(dat_dHCP), value = TRUE)
+ctrl_vars <- grep("^[lr]_(insula|putamen)_", names(dat_dHCP), value = TRUE)
+
+# --- check data loaded ---
+stopifnot(
+  nrow(dat_dHCP) == 144, !anyNA(dat_dHCP$group), !anyNA(dat_dHCP$sex),
+  length(cp_vars) == 22, setequal(cp_vars, names(roi_labels)),
+  length(ctrl_vars) == 44, setequal(ctrl_vars, names(roi_labels_ctrl))
+)
+```
+
+# 2 Run ANCOVA control analyses for all ROIs
+
+### Specific setup
+
+```{r}
+options(contrasts = c("contr.sum", "contr.poly"))
+
+stopifnot(is.factor(dat_dHCP$group), is.factor(dat_dHCP$sex), is.numeric(dat_dHCP$scan_age))
+```
+
+## A Using control-seed CP as covariate
+
+### ANCOVA helper function
+
+```{r}
+# build helper function to run ANCOVA
+run_ancova_one <- function(dv){
+  fml <- as.formula(paste(dv, "~ group + scan_age + sex"))
+  df  <- dat_dHCP[, all.vars(fml)] %>% na.omit()
+  if (nrow(df) < 20) return(NULL)
+  
+  fit <- lm(fml, data = df)
+  
+  # Type-III ANOVA
+  a3  <- car::Anova(fit, type = 3)
+  
+  # Extract key numbers from the ANOVA table
+  a3_df <- as.data.frame(a3)
+  a3_df$Term <- rownames(a3_df)
+  
+  ss_group <- a3_df$`Sum Sq`[a3_df$Term == "group"]
+  df_group <- a3_df$Df[a3_df$Term == "group"]
+  Fval     <- a3_df$`F value`[a3_df$Term == "group"]
+  pval     <- a3_df$`Pr(>F)`[a3_df$Term == "group"]
+  
+  ss_res   <- a3_df$`Sum Sq`[a3_df$Term == "Residuals"]
+  df_res   <- a3_df$Df[a3_df$Term == "Residuals"]
+  
+  # Partial eta^2
+  partial_eta2 <- as.numeric(ss_group / (ss_group + ss_res))
+  
+  # Estimated marginal means and contrast (FT - PT)
+  emm   <- emmeans::emmeans(fit, ~ group)
+  comp  <- emmeans::contrast(emm, method = "pairwise") %>% summary(infer = TRUE)
+  
+  emm_tbl <- as.data.frame(emm)
+  mean_FT <- emm_tbl$emmean[emm_tbl$group == "FT"]
+  mean_PT <- emm_tbl$emmean[emm_tbl$group == "PT"]
+  diff_FT_PT <- comp$estimate[1]  # FT - PT
+  
+  dir_lab <- if (pval < 0.05) {
+    if (diff_FT_PT > 0) "FT > PT" else "PT > FT"
+  } else {
+    if (diff_FT_PT > 0) "NS (FT > PT)" else "NS (PT > FT)"
+  }
+  
+  f_str <- sprintf("F(1, %d) = %.2f, p = %s",
+                   df_res, Fval,
+                   ifelse(pval < .001, "< 0.001**",
+                          ifelse(pval < .01, sprintf("%.3f*", pval),
+                                 sprintf("%.3f", pval))))
+  
+  tibble(
+    dv            = dv,
+    ROI           = dplyr::recode(dv, !!!roi_labels_all, .default = dv),
+    N             = nrow(df),
+    F             = as.numeric(Fval),
+    df1           = as.numeric(df_group),
+    df2           = as.numeric(df_res),
+    p             = as.numeric(pval),
+    partial_eta2  = partial_eta2,
+    emmean_FT     = as.numeric(mean_FT),
+    emmean_PT     = as.numeric(mean_PT),
+    diff_FT_minus_PT = as.numeric(diff_FT_PT),
+    Direction     = dir_lab,
+    F_string      = f_str
+  )
+}
+
+# helper function to run ANCOVA with matched control-seed covariate
+run_ancova_ctrl <- function(dv, control = NULL){
+  
+  extra <- if (is.null(control)) character(0)
+  else vapply(control, \(s) sub("_claustrum_", paste0("_", s, "_"), dv), "")
+  
+  missing_cols <- setdiff(extra, names(dat_dHCP))
+  if (length(missing_cols)) { warning("missing: ", paste(missing_cols, collapse=", ")); return(NULL) }
+  
+  fml <- as.formula(paste(dv, "~ group + scan_age + sex",
+                          if (length(extra)) paste("+", paste(extra, collapse = " + ")) else ""))
+  df  <- dat_dHCP[, all.vars(fml)] |> na.omit()
+  if (nrow(df) < 20) return(NULL)
+  
+  fit <- lm(fml, data = df)
+  a3  <- as.data.frame(car::Anova(fit, type = 3))
+  a3$Term <- rownames(a3)
+  
+  ss_g <- a3$`Sum Sq`[a3$Term == "group"]
+  ss_r <- a3$`Sum Sq`[a3$Term == "Residuals"]
+  Fval <- a3$`F value`[a3$Term == "group"]
+  pval <- a3$`Pr(>F)`[a3$Term == "group"]
+  df_r <- a3$Df[a3$Term == "Residuals"]
+  
+  emm  <- emmeans::emmeans(fit, ~ group)
+  comp <- emmeans::contrast(emm, method = "pairwise") |> summary(infer = TRUE)
+  
+  # how much the covariate itself explains
+  beta_ctrl <- if (length(extra))
+    paste(sprintf("%s: b=%.3f, p=%.3f",
+                  extra,
+                  coef(summary(fit))[extra, "Estimate"],
+                  coef(summary(fit))[extra, "Pr(>|t|)"]), collapse = "; ") else NA_character_
+  
+  tibble(
+    dv = dv,
+    ROI = dplyr::recode(dv, !!!roi_labels, .default = dv),
+    model = if (is.null(control)) "unadjusted" else paste(control, collapse = "+"),
+    N = nrow(df), F = as.numeric(Fval), df2 = as.numeric(df_r),
+    p = as.numeric(pval),
+    partial_eta2 = as.numeric(ss_g / (ss_g + ss_r)),
+    diff_FT_minus_PT = comp$estimate[1],
+    control_effect = beta_ctrl
+  )
+}
+```
+
+### Test group differences in control seeds
+
+```{r}
+res_ctrl <- map_dfr(ctrl_vars, run_ancova_one) |>
+  mutate(seed  = if_else(str_detect(dv, "_insula_"), "Insula", "Putamen")) |>
+  group_by(seed) |>
+  mutate(p_FDR = p.adjust(p, method = "fdr")) |>
+  ungroup() |>
+  arrange(seed, p)
+
+readr::write_excel_csv2(res_ctrl, file.path(tab_dir, paste0("Revision_control_group_diff_dHCP_", Sys.Date(), ".csv")))
+```
+
+### Results of specificity analysis
+
+```{r}
+res_spec <- bind_rows(
+  map_dfr(cp_vars, run_ancova_ctrl, control = NULL),
+  map_dfr(cp_vars, run_ancova_ctrl, control = "insula"),
+  map_dfr(cp_vars, run_ancova_ctrl, control = "putamen"),
+  map_dfr(cp_vars, run_ancova_ctrl, control = c("insula","putamen"))
+) |>
+  group_by(model) |>
+  mutate(p_FDR = p.adjust(p, method = "fdr")) |>
+  ungroup()
+```
+
+### Evaluate survival of original findings
+
+```{r}
+survival <- res_spec |>
+  dplyr::select(ROI, model, F, p, p_FDR, partial_eta2, diff_FT_minus_PT) |>
+  pivot_wider(names_from = model,
+              values_from = c(F, p, p_FDR, partial_eta2, diff_FT_minus_PT)) |>
+  mutate(
+    sig_unadj = p_FDR_unadjusted     < .05,
+    sig_ins   = p_FDR_insula         < .05,
+    sig_put   = p_FDR_putamen        < .05,
+    sig_both  = `p_FDR_insula+putamen` < .05,
+    status = case_when(
+      sig_unadj &  sig_both ~ "survives full adjustment",
+      sig_unadj & (sig_ins | sig_put) ~ "survives single adjustment only",
+      sig_unadj ~ "lost after adjustment",
+      TRUE ~ "ns unadjusted"
+    )
+  ) |>
+  arrange(p_FDR_unadjusted)
+
+# save tables
+readr::write_excel_csv2(res_spec, file.path(tab_dir, paste0("Revision_specificity_ANCOVA_CP_dHCP_", Sys.Date(), ".csv")))
+readr::write_excel_csv2(survival, file.path(tab_dir, paste0("Revision_specificity_survival_dHCP_", Sys.Date(), ".csv")))
+```
+
+# B Using seed and target volumes as covariates
+
+### ANCOVA helper function
+
+```{r}
+pathway_suffix <- function(dv) sub("^[lr]_claustrum_", "", dv)
+
+stopifnot(
+  all(paste0("target_vol_", pathway_suffix(cp_vars)) %in% names(dat_dHCP)),
+  all(c("seed_vox_l", "seed_vox_r") %in% names(dat_dHCP))
+)
+
+run_ancova_vol <- function(dv, adjust = c("none", "seed", "target", "both")){
+  adjust <- match.arg(adjust)
+  hemi   <- substr(dv, 1, 1)
+  
+  d <- dat_dHCP |>
+    dplyr::transmute(
+      group, scan_age, sex,
+      y          = .data[[dv]],
+      seed_cov   = .data[[paste0("seed_vox_", hemi)]],
+      target_cov = .data[[paste0("target_vol_", pathway_suffix(dv))]]
+    )
+  
+  terms <- c("group", "scan_age", "sex",
+             if (adjust %in% c("seed", "both"))   "seed_cov",
+             if (adjust %in% c("target", "both")) "target_cov")
+  
+  d <- d[, c("y", terms)] |> na.omit()
+  if (nrow(d) < 20) return(NULL)
+  d <- d |>
+    dplyr::mutate(group_num = as.numeric(group),
+                  dplyr::across(dplyr::any_of(c("seed_cov", "target_cov")),
+                                ~ as.numeric(scale(.x))))
+  
+  fit <- lm(reformulate(terms, response = "y"), data = d)
+  a3  <- as.data.frame(car::Anova(fit, type = 3))
+  a3$Term <- rownames(a3)
+  ss_g <- a3$`Sum Sq`[a3$Term == "group"]
+  ss_r <- a3$`Sum Sq`[a3$Term == "Residuals"]
+  
+  cs <- coef(summary(fit))
+  cov_stat <- function(term, col) if (term %in% rownames(cs)) cs[term, col] else NA_real_
+  
+  # how well do the other covariates predict group?
+  others <- setdiff(terms, "group")
+  vif_g  <- 1 / (1 - summary(lm(reformulate(others, response = "group_num"), data = d))$r.squared)
+  
+  comp <- emmeans::contrast(emmeans::emmeans(fit, ~ group), method = "pairwise") |>
+    summary(infer = TRUE)
+  
+  tibble(
+    dv = dv, ROI = dplyr::recode(dv, !!!roi_labels, .default = dv),
+    model = adjust, N = nrow(d),
+    F = a3$`F value`[a3$Term == "group"], df2 = a3$Df[a3$Term == "Residuals"],
+    p = a3$`Pr(>F)`[a3$Term == "group"],
+    partial_eta2 = ss_g / (ss_g + ss_r),
+    diff_FT_minus_PT = comp$estimate[1],
+    beta_seed   = cov_stat("seed_cov",   "Estimate"), p_seed   = cov_stat("seed_cov",   "Pr(>|t|)"),
+    beta_target = cov_stat("target_cov", "Estimate"), p_target = cov_stat("target_cov", "Pr(>|t|)"),
+    vif_group = vif_g
+  )
+}
+```
+
+### Seed and target volume dependence analysis
+
+```{r}
+res_vol <- purrr::map_dfr(c("none", "seed", "target", "both"),
+                          \(m) purrr::map_dfr(cp_vars, run_ancova_vol, adjust = m)) |>
+  dplyr::group_by(model) |>
+  dplyr::mutate(p_FDR = p.adjust(p, method = "fdr")) |>
+  dplyr::ungroup()
+```
+
+### Evaluate survival of original findings
+
+```{r}
+survival_vol <- res_vol |>
+  dplyr::select(ROI, model, p_FDR, diff_FT_minus_PT) |>
+  tidyr::pivot_wider(names_from = model, values_from = c(p_FDR, diff_FT_minus_PT)) |>
+  dplyr::filter(p_FDR_none < .05) |>
+  dplyr::mutate(sig_seed   = p_FDR_seed   < .05,
+                sig_target = p_FDR_target < .05,
+                sig_both   = p_FDR_both   < .05,
+                effect_retained_both = diff_FT_minus_PT_both / diff_FT_minus_PT_none) |>
+  dplyr::arrange(p_FDR_none)
+
+# save tables
+readr::write_excel_csv2(res_vol,      file.path(tab_dir, paste0("Revision_specificity_volume_ANCOVA_CP_dHCP_", Sys.Date(), ".csv")))
+readr::write_excel_csv2(survival_vol, file.path(tab_dir, paste0("Revision_specificity_volume_survival_dHCP_",  Sys.Date(), ".csv")))
+```
+
+# C Using distance between seed and target ROI as covariates
+
+### ANCOVA helper function
+
+```{r}
+stopifnot(all(paste0("dist_", pathway_suffix(cp_vars)) %in% names(dat_dHCP)))
+
+run_ancova_dis <- function(dv, adjust = c("none", "distance")){
+  adjust <- match.arg(adjust)
+  
+  d <- dat_dHCP |>
+    dplyr::transmute(
+      group, scan_age, sex,
+      y            = .data[[dv]],
+      distance_cov = .data[[paste0("dist_", pathway_suffix(dv))]]
+    )
+  
+  terms <- c("group", "scan_age", "sex",
+             if (adjust == "distance") "distance_cov")
+  
+  d <- d[, c("y", terms)] |> na.omit()
+  if (nrow(d) < 20) return(NULL)
+  d <- d |>
+    dplyr::mutate(group_num = as.numeric(group),
+                  dplyr::across(dplyr::any_of("distance_cov"),
+                                ~ as.numeric(scale(.x))))
+  
+  fit <- lm(reformulate(terms, response = "y"), data = d)
+  a3  <- as.data.frame(car::Anova(fit, type = 3))
+  a3$Term <- rownames(a3)
+  ss_g <- a3$`Sum Sq`[a3$Term == "group"]
+  ss_r <- a3$`Sum Sq`[a3$Term == "Residuals"]
+  
+  cs <- coef(summary(fit))
+  cov_stat <- function(term, col) if (term %in% rownames(cs)) cs[term, col] else NA_real_
+  
+  others <- setdiff(terms, "group")
+  vif_g  <- 1 / (1 - summary(lm(reformulate(others, response = "group_num"), data = d))$r.squared)
+  
+  comp <- emmeans::contrast(emmeans::emmeans(fit, ~ group), method = "pairwise") |>
+    summary(infer = TRUE)
+  
+  tibble(
+    dv = dv, ROI = dplyr::recode(dv, !!!roi_labels, .default = dv),
+    model = adjust, N = nrow(d),
+    F = a3$`F value`[a3$Term == "group"], df2 = a3$Df[a3$Term == "Residuals"],
+    p = a3$`Pr(>F)`[a3$Term == "group"],
+    partial_eta2 = ss_g / (ss_g + ss_r),
+    diff_FT_minus_PT = comp$estimate[1],
+    beta_dist = cov_stat("distance_cov", "Estimate"), p_dist = cov_stat("distance_cov", "Pr(>|t|)"),
+    vif_group = vif_g
+  )
+}
+```
+
+### Seed and target distance dependence analysis
+
+```{r}
+res_dis <- purrr::map_dfr(c("none", "distance"),
+                          \(m) purrr::map_dfr(cp_vars, run_ancova_dis, adjust = m)) |>
+  dplyr::group_by(model) |>
+  dplyr::mutate(p_FDR = p.adjust(p, method = "fdr")) |>
+  dplyr::ungroup()
+```
+
+### Evaluate survival of original findings
+
+```{r}
+survival_dis <- res_dis |>
+  dplyr::select(ROI, model, p_FDR, diff_FT_minus_PT) |>
+  tidyr::pivot_wider(names_from = model, values_from = c(p_FDR, diff_FT_minus_PT)) |>
+  dplyr::filter(p_FDR_none < .05) |>
+  dplyr::mutate(sig_distance     = p_FDR_distance < .05,
+                effect_retained  = diff_FT_minus_PT_distance / diff_FT_minus_PT_none) |>
+  dplyr::arrange(p_FDR_none)
+```
+
+### Save outputs
+
+```{r}
+readr::write_excel_csv2(res_dis,      file.path(tab_dir, paste0("Revision_specificity_distance_ANCOVA_CP_dHCP_", Sys.Date(), ".csv")))
+readr::write_excel_csv2(survival_dis, file.path(tab_dir, paste0("Revision_specificity_distance_survival_dHCP_",  Sys.Date(), ".csv")))
+```

@@ -1,0 +1,834 @@
+---
+title: "Claustrum Connectivity in Prematurity GLM analyses"
+author: "Jil Wendt"
+format: html
+editor: visual
+---
+
+GLMs in preterm-born adults (BLS cohort): early environment, perinatal variables, cognition at 8 years (K-ABC) and adult cognition, and group x environment interactions in the full cohort. Heatmap panels for Figures 4, 5 and S4.
+
+- Input: `data/adults_harmonized.csv`
+- Outputs:
+  - `outputs/tables/CP_Early_FULL_FACTOR_SES_<date>.csv`: Table S14 (results/env_GLM_CP_BLS.csv)
+  - `outputs/tables/CP_Interaction_GroupxAllEnv_<date>.csv`: Table S15 (results/env_interaction_group_x_env_CP_BLS.csv)
+  - `outputs/tables/CP_Prematurity_single_GLM_PTonly_NEW<date>.csv`: Table S9 (results/perinatal_GLM_CP_BLS.csv)
+  - `outputs/tables/CP_cognitive8y_single_GLM_PTonly_<date>.csv` (results/cognition_KABC_GLM_CP_BLS.csv)
+  - `outputs/tables/Cognition_singleROI_CP_PTonly_<date>.csv`: Table S17 (results/cognition_GLM_CP_BLS.csv)
+  - `outputs/figures/p_heat_*_BLS_noleg.rds`: heatmap panels, combined in `manuscript_figures.qmd`
+  - `checkpoints/glm_checkpoint.rds`: input for `Revision_2_1_3.qmd`
+
+# Setup
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(broom)
+library(here)
+
+tab_dir <- here::here("outputs", "tables")
+```
+
+#### Helper Functions
+
+```{r}
+theme_claustrum_heatmap <- function() {
+  theme_minimal(base_size = 11) +
+    theme(
+      panel.grid      = element_blank(),
+      axis.title.x    = element_blank(),
+      axis.title.y    = element_blank(),
+      axis.text.x     = element_text(angle = 30, hjust = 1, vjust = 1,
+                                     margin = margin(t = 4)),
+      axis.text.y     = element_text(margin = margin(r = 4)),
+      legend.title    = element_text(size = 10),
+      legend.key.height = unit(0.5, "cm"),
+      plot.margin     = margin(t = 5.5, r = 5.5, b = 5.5, l = 5.5)
+    )
+}
+```
+
+#### Lookup Tables for Variable Names
+
+```{r}
+roi_labels <- c(
+  cp_ac_occ_l_ipsi  = "Occipital Associative (L)",
+  cp_ac_occ_r_ipsi  = "Occipital Associative (R)",
+  cp_ac_par_l_ipsi  = "Parietal Associative (L)",
+  cp_ac_par_r_ipsi  = "Parietal Associative (R)",
+  cp_ac_pfc_l_ipsi  = "Prefrontal Associative (L)",
+  cp_ac_pfc_r_ipsi  = "Prefrontal Associative (R)",
+  cp_ac_temp_l_ipsi = "Temporal Associative (L)",
+  cp_ac_temp_r_ipsi = "Temporal Associative (R)",
+  cp_c_pos_l_ipsi   = "Posterior Cingulate (L)",
+  cp_c_pos_r_ipsi   = "Posterior Cingulate (R)",
+  cp_c_ant_l_ipsi   = "Anterior Cingulate (L)",
+  cp_c_ant_r_ipsi   = "Anterior Cingulate (R)",
+  cp_pc_aud_l_ipsi  = "Primary Auditory (L)",
+  cp_pc_aud_r_ipsi  = "Primary Auditory (R)",
+  cp_pc_mot_l_ipsi  = "Primary Motor (L)",
+  cp_pc_mot_r_ipsi  = "Primary Motor (R)",
+  cp_pc_sens_l_ipsi = "Primary Somatosensory (L)",
+  cp_pc_sens_r_ipsi = "Primary Somatosensory (R)",
+  cp_pc_vis_l_ipsi  = "Primary Visual (L)",
+  cp_pc_vis_r_ipsi  = "Primary Visual (R)",
+  cp_sc_hip_l_ipsi  = "Hippocampus (L)",
+  cp_ac_hip_r_ipsi  = "Hippocampus (R)"
+)
+
+sig_levels <- c("p < .05 (uncorr.)", "FDR < .05")
+```
+
+## Load data
+
+```{r}
+dat <- read_delim(
+  here("data", "adults_harmonized.csv"),
+  delim = ";",
+  trim_ws = TRUE,
+  locale = locale(decimal_mark = ","),
+  na = c(""," ","NA", "NaN", "n/a", ".", "-9999","999"),
+  col_types = cols(
+    Subject = col_character(),
+    ID      = col_character()
+  ),
+  guess_max = 10000
+) |> janitor::clean_names()
+
+# --- recode and name important factors ---
+dat <- dat %>%
+  mutate(
+    group = factor(case_when(
+      groupcode == 0 ~ "FT",
+      groupcode == 1 ~ "PT",
+      TRUE ~ NA_character_
+    ), levels = c("FT", "PT")),
+
+    sex = factor(case_when(
+      sex == 1 ~ "Male",
+      sex == 2 ~ "Female",
+      TRUE ~ NA_character_
+    ), levels = c("Female", "Male"))
+  )
+```
+
+```{r}
+# ROIs with FDR-significant group differences in CP
+sig_roi_codes <- c(
+  "cp_ac_occ_r_ipsi",
+  "cp_ac_occ_l_ipsi",
+  "cp_ac_par_l_ipsi",
+  "cp_ac_pfc_l_ipsi",
+  "cp_ac_temp_l_ipsi",
+  "cp_pc_mot_r_ipsi",
+  "cp_pc_vis_r_ipsi",
+  "cp_c_pos_r_ipsi"
+)
+```
+
+## Find discrete variables
+
+```{r}
+find_discrete_candidates <- function(data, max_unique = 10) {
+  data %>%
+    summarise(across(where(is.numeric), ~ list(unique(.)))) %>%
+    tidyr::pivot_longer(
+      everything(),
+      names_to = "variable",
+      values_to = "unique_values"
+    ) %>%
+    mutate(
+      n_unique = purrr::map_int(unique_values, length),
+      sample_values = purrr::map_chr(unique_values, ~ paste(sort(.x), collapse = ", "))
+    ) %>%
+    filter(n_unique <= max_unique) %>%
+    dplyr::select(variable, n_unique, sample_values) %>%
+    arrange(n_unique)
+}
+```
+
+### Recoding variables as discrete
+
+```{r}
+cands <- find_discrete_candidates(dat, max_unique = 11) |>
+  dplyr::pull(variable)
+
+dat <- dat |>
+  dplyr::mutate(
+    dplyr::across(
+      dplyr::all_of(cands) & where(~ !is.factor(.)),
+      ~ factor(.x, levels = sort(unique(.x)))
+    )
+  )
+```
+
+## Adjust data and create subsets
+
+```{r}
+drop_vars <- c("id")
+
+final_dat_CP <- dat %>%
+  dplyr::select(-starts_with("cd_"), -all_of(drop_vars))
+
+cp_vars    <- grep("^cp_", names(final_dat_CP), value = TRUE)
+early_vars <- c("ses0y2", "psi1", "betreu", "optws")
+
+dat_PT <- final_dat_CP %>%
+  dplyr::filter(group == "PT")
+```
+
+# Analysis 1: Early Social Environment
+
+### Specific setup
+
+```{r}
+covars <- c("age_at_scan", "sex")
+
+stopifnot(all(c(early_vars, covars) %in% names(dat_PT)))
+```
+
+### SES as factor
+
+```{r}
+dat_PT_fac <- dat_PT %>%
+  mutate(
+    across(all_of(c(cp_vars, "psi1", "betreu", "optws")), ~ {
+      if (is.factor(.)) suppressWarnings(as.numeric(as.character(.))) else as.numeric(.)
+    }),
+    ses0y2_fac = factor(ses0y2, levels = c(1, 2, 3),
+                        labels = c("Upper", "Middle", "Lower"))
+  )
+```
+
+#### Full model: CP \~ SES (factor) + PIRI + PSI + pregnancy optimality + age + sex
+
+```{r}
+results_full_factorSES <- map_dfr(cp_vars, function(dv) {
+  fml <- as.formula(paste(dv, "~", paste(c("ses0y2_fac", "psi1", "betreu", "optws", covars), collapse = " + ")))
+  df  <- dat_PT_fac[, all.vars(fml)] %>% na.omit()
+  if (nrow(df) < 5) return(NULL)
+
+  fit <- lm(fml, data = df)
+  td  <- tidy(fit); gl <- glance(fit)
+
+  td %>% 
+    filter(grepl("^ses0y2_fac", term) | term %in% c("psi1","betreu","optws")) %>%
+    transmute(
+      model_type    = "full_factorSES",
+      predictor_or_contrast = term,
+      dv            = dv,
+      estimate      = estimate,
+      std.error     = std.error,
+      ci_lo         = estimate - 1.96 * std.error,
+      ci_hi         = estimate + 1.96 * std.error,
+      t_value       = statistic,
+      p.value       = p.value,
+      r.squared     = gl$r.squared,
+      adj.r.squared = gl$adj.r.squared,
+      n             = nrow(df)
+    )
+})
+
+# FDR across all predictors and ROIs
+results_full_factorSES <- results_full_factorSES %>%
+  mutate(p_adj_fdr = p.adjust(p.value, method = "fdr")) %>%
+  arrange(p_adj_fdr, p.value)
+
+# FDR within each predictor across ROIs
+results_full_factorSES <- results_full_factorSES %>%
+  group_by(predictor_or_contrast) %>%
+  mutate(p_adj_fdr_by_predictor = p.adjust(p.value, method = "fdr")) %>%
+  ungroup()
+
+outfile_full_fac <- file.path(tab_dir, paste0("CP_Early_FULL_FACTOR_SES_", format(Sys.Date()), ".csv"))
+write_csv2(results_full_factorSES, outfile_full_fac)
+message("Saved: ", outfile_full_fac)
+```
+
+#### Interaction analysis: group x environmental factors (full cohort)
+
+```{r}
+dat_full_fac <- final_dat_CP %>%
+  mutate(
+    across(all_of(c(cp_vars, "psi1", "betreu", "optws")), ~ {
+      if (is.factor(.)) suppressWarnings(as.numeric(as.character(.))) else as.numeric(.)
+    }),
+    ses0y2_fac = factor(ses0y2, levels = c(1, 2, 3),
+                        labels = c("Upper", "Middle", "Lower")),
+    group = factor(group, levels = c("FT", "PT"))
+  )
+```
+
+```{r}
+env_vars_interaction <- list(
+  list(pred = "ses0y2_fac", interact_term = "group * ses0y2_fac",  filter_pattern = "groupPT:ses0y2_fac"),
+  list(pred = "psi1",       interact_term = "group * psi1",        filter_pattern = "groupPT:psi1"),
+  list(pred = "betreu",     interact_term = "group * betreu",       filter_pattern = "groupPT:betreu"),
+  list(pred = "optws",      interact_term = "group * optws",        filter_pattern = "groupPT:optws")
+)
+
+results_interaction_all <- map_dfr(env_vars_interaction, function(env) {
+  map_dfr(cp_vars, function(dv) {
+    
+    other_env <- setdiff(c("ses0y2_fac", "psi1", "betreu", "optws"), env$pred)
+    
+    fml <- as.formula(paste(dv, "~", paste(c(env$interact_term, other_env, covars), collapse = " + ")))
+    df  <- dat_full_fac[, all.vars(fml)] %>% na.omit()
+    if (nrow(df) < 5) return(NULL)
+    
+    fit <- lm(fml, data = df)
+    td  <- tidy(fit); gl <- glance(fit)
+    
+    td %>%
+      filter(grepl(env$filter_pattern, term)) %>%
+      transmute(
+        model_type            = paste0("interaction_groupx", env$pred),
+        predictor_or_contrast = term,
+        dv                    = dv,
+        estimate              = estimate,
+        std.error             = std.error,
+        ci_lo                 = estimate - 1.96 * std.error,
+        ci_hi                 = estimate + 1.96 * std.error,
+        t_value               = statistic,
+        p.value               = p.value,
+        r.squared             = gl$r.squared,
+        adj.r.squared         = gl$adj.r.squared,
+        n                     = nrow(df)
+      )
+  })
+})
+
+results_interaction_all <- results_interaction_all %>%
+  mutate(p_adj_fdr = p.adjust(p.value, method = "fdr")) %>%
+  arrange(p_adj_fdr, p.value) %>%
+  group_by(predictor_or_contrast) %>%
+  mutate(p_adj_fdr_by_predictor = p.adjust(p.value, method = "fdr")) %>%
+  ungroup()
+
+outfile_interaction_all <- file.path(tab_dir, paste0("CP_Interaction_GroupxAllEnv_", format(Sys.Date()), ".csv"))
+write_csv2(results_interaction_all, outfile_interaction_all)
+message("Saved: ", outfile_interaction_all)
+```
+
+### Heatmap (Figure 4B)
+
+```{r}
+labels_map <- c(
+  betreu           = "PIRI\n(neo/5m)",
+  psi1             = "Psychosocial Stress Index\n(neo/5m)",
+  optws            = "Optimality pregnancy",
+  ses0y2_fac1      = "SES:\nLower vs Upper",
+  ses0y2_fac2      = "SES:\nMiddle vs Upper",
+  ses0y2_facMiddle = "SES:\nMiddle vs Upper",
+  ses0y2_facLower  = "SES:\nLower vs Upper"
+)
+
+pred_order_keys <- c("betreu","psi1","optws",
+                     "ses0y2_fac1","ses0y2_fac2",
+                     "ses0y2_facMiddle","ses0y2_facLower")
+
+sig_roi_labels <- unname(roi_labels[sig_roi_codes])
+
+heat_df <- results_full_factorSES %>%
+  mutate(
+    ROI      = dplyr::recode(dv, !!!roi_labels, .default = dv),
+    term_chr = as.character(predictor_or_contrast),
+    predictor_label = {
+      m <- labels_map[term_chr]
+      m[is.na(m)] <- term_chr[is.na(m)]
+      unname(m)
+    },
+    neglog10p = -log10(p.value) * sign(estimate),
+    sig_unc   = p.value < 0.05,
+    sig_fdr   = if ("p_adj_fdr_by_predictor" %in% names(.)) p_adj_fdr_by_predictor < 0.05 else FALSE,
+    sig_type  = factor(
+      dplyr::case_when(
+        sig_fdr ~ "FDR < .05",
+        sig_unc ~ "p < .05 (uncorr.)",
+        TRUE    ~ NA_character_
+      ),
+      levels = sig_levels
+    )
+  )
+
+present_keys  <- intersect(pred_order_keys, unique(results_full_factorSES$predictor_or_contrast))
+pretty_levels <- unique(na.omit(unname(labels_map[present_keys])))
+
+heat_df <- heat_df %>%
+  mutate(
+    predictor_label = factor(predictor_label, levels = pretty_levels),
+    ROI             = factor(ROI, levels = rev(unname(roi_labels)))
+  )
+
+dummy_sig_SES <- data.frame(
+  predictor_label = factor(levels(heat_df$predictor_label)[1],
+                           levels = levels(heat_df$predictor_label)),
+  ROI      = factor(levels(heat_df$ROI)[1],
+                    levels = levels(heat_df$ROI)),
+  sig_type = factor(sig_levels, levels = sig_levels)
+)
+
+M <- 3
+p_heat_full_factorSES <- ggplot(heat_df, aes(x = predictor_label, y = ROI, fill = neglog10p)) +
+  geom_tile() +
+  geom_point(
+    data   = subset(heat_df, !is.na(sig_type)),
+    aes(shape = sig_type),
+    size   = 2.2,
+    stroke = 0.8,
+    colour = "black",
+    na.rm  = TRUE
+  ) +
+  geom_point(
+    data        = dummy_sig_SES,
+    aes(x = predictor_label, y = ROI, shape = sig_type),
+    inherit.aes = FALSE,
+    alpha       = 0,
+    show.legend = TRUE
+  ) +
+ scale_shape_manual(
+    name   = "Significance",
+    values = c("p < .05 (uncorr.)" = 1,
+               "FDR < .05"         = 16),
+    breaks = sig_levels,
+    drop   = FALSE
+  ) +
+  scale_fill_gradient2(
+    name = "Sign & strength\n(–log10 p)",
+    low = "#4575B4", mid = "white", high = "#D73027",
+    limits = c(-M, M), midpoint = 0, oob = scales::squish
+  ) +
+  scale_y_discrete(
+    labels = function(rois) ifelse(
+      rois %in% sig_roi_labels,
+      paste0("★ ", rois),
+      rois
+    )
+  ) +
+  labs(
+    x       = NULL,
+    y       = NULL,
+    caption = "★ Region with significant PT vs. FT group difference in CP"
+  ) +
+  theme_claustrum_heatmap() +
+  theme(
+    plot.caption = element_text(hjust = 0, size = 9, colour = "grey30",
+                                margin = margin(t = 6))
+  ) +
+  guides(
+    fill  = guide_colourbar(order = 1),
+    shape = guide_legend(order = 2)
+  )
+
+p_heat_full_factorSES_BLS_noleg <- p_heat_full_factorSES +
+  theme(legend.position = "none") +
+  guides(
+    fill  = "none",
+    shape = "none"
+  )
+
+saveRDS(p_heat_full_factorSES_BLS_noleg, here("outputs", "figures", "p_heat_full_factorSES_BLS_noleg.rds"))
+```
+
+# Analysis 2: Perinatal variables
+
+### Setup
+
+```{r}
+prematurity_vars <- c("tz", "gew", "inti")
+
+dat_PT_num <- dat_PT %>%
+  mutate(across(all_of(c(cp_vars, prematurity_vars)), ~ {
+    if (is.factor(.)) suppressWarnings(as.numeric(as.character(.))) else as.numeric(.)
+  }))
+```
+
+## GLM: CP \~ perinatal variable + age + sex (PT only)
+
+```{r}
+results_prematurity <- purrr::map_dfr(prematurity_vars, function(pred) {
+  purrr::map_dfr(cp_vars, function(dv) {
+
+    fml <- as.formula(paste(dv, "~", paste(c(pred, covars), collapse = " + ")))
+    df  <- dat_PT_num[, all.vars(fml)] %>% na.omit()
+    if (nrow(df) < 5) return(NULL)
+
+    fit <- lm(fml, data = df)
+
+    td <- tidy(fit)
+    gl <- glance(fit)
+
+    row <- td %>% filter(term == pred)
+    if (!nrow(row)) return(NULL)
+
+    tibble(
+      predictor     = pred,
+      dv            = dv,
+      estimate      = row$estimate,
+      std.error     = row$std.error,
+      ci_lo         = estimate - 1.96 * std.error,
+      ci_hi         = estimate + 1.96 * std.error,
+      t_value       = row$statistic,
+      p.value       = row$p.value,
+      r.squared     = gl$r.squared,
+      adj.r.squared = gl$adj.r.squared,
+      n             = nrow(df)
+    )
+  })
+})
+
+# FDR across all predictors and ROIs
+results_prematurity <- results_prematurity %>%
+  mutate(p_adj_fdr = p.adjust(p.value, method = "fdr")) %>%
+  arrange(p.value)
+
+# FDR within each predictor across ROIs
+results_prematurity <- results_prematurity %>%
+  group_by(predictor) %>%
+  mutate(p_adj_fdr_by_predictor = p.adjust(p.value, method = "fdr")) %>%
+  ungroup()
+
+outfile_prem <- file.path(tab_dir, paste0("CP_Prematurity_single_GLM_PTonly_NEW", format(Sys.Date()), ".csv"))
+readr::write_csv2(results_prematurity, outfile_prem)
+message("Saved: ", outfile_prem)
+```
+
+### Heatmap (Figure S4B)
+
+```{r}
+# scale BW effect to per 100 g
+pred_order <- c("gew","tz","inti")
+pred_labs  <- c(
+  gew  = "Birth weight\n(per 100 g)",
+  tz   = "Gestational age\n(per week)",
+  inti = "INTI"
+)
+
+heat_df <- results_prematurity %>%
+  mutate(
+    ROI = dplyr::recode(dv, !!!roi_labels, .default = dv),
+    estimate_scaled  = if_else(predictor == "gew", estimate * 100, estimate),
+    std.error_scaled = if_else(predictor == "gew", std.error * 100, std.error),
+    predictor_label = {
+      mapped <- pred_labs[predictor]
+      mapped[is.na(mapped)] <- predictor[is.na(mapped)]
+      unname(mapped)
+    },
+    # signed -log10(p): red = positive, blue = negative
+    neglog10p = -log10(p.value) * sign(estimate_scaled),
+
+    # significance flags
+    sig_unc   = p.value < 0.05,
+    sig_fdr_p = if ("p_adj_fdr_by_predictor" %in% names(.)) p_adj_fdr_by_predictor < 0.05 else FALSE,
+
+    # combined significance type for the legend
+    sig_type  = factor(
+      dplyr::case_when(
+        sig_fdr_p ~ "FDR < .05",
+        sig_unc   ~ "p < .05 (uncorr.)",
+        TRUE      ~ NA_character_
+      ),
+      levels = sig_levels
+    )
+  ) %>%
+  mutate(
+    predictor_label = factor(predictor_label, levels = pred_labs[pred_order]),
+    ROI             = factor(ROI, levels = rev(unname(roi_labels)))
+  )
+
+dummy_sig_prem <- data.frame(
+  predictor_label = factor(levels(heat_df$predictor_label)[1],
+                           levels = levels(heat_df$predictor_label)),
+  ROI      = factor(levels(heat_df$ROI)[1],
+                    levels = levels(heat_df$ROI)),
+  sig_type = factor(sig_levels, levels = sig_levels)
+)
+
+p_heat <- ggplot(heat_df, aes(x = predictor_label, y = ROI, fill = neglog10p)) +
+  geom_tile() +
+  geom_point(
+    data   = subset(heat_df, !is.na(sig_type)),
+    aes(shape = sig_type),
+    size   = 2.2,
+    stroke = 0.8,
+    colour = "black",
+    na.rm  = TRUE
+  ) +
+  geom_point(
+    data        = dummy_sig_prem,
+    aes(x = predictor_label, y = ROI, shape = sig_type),
+    inherit.aes = FALSE,
+    alpha       = 0,
+    show.legend = TRUE
+  ) +
+  scale_shape_manual(
+    name   = "Significance",
+    values = c("p < .05 (uncorr.)" = 1,
+               "FDR < .05"         = 16),
+    breaks = sig_levels,
+    drop   = FALSE
+  ) +
+  scale_fill_gradient2(
+    name = "Sign & strength\n(-log10 p)",
+    low = "#4575B4", mid = "white", high = "#D73027",
+    limits = c(-3, 3), midpoint = 0, oob = scales::squish
+  ) +
+  scale_y_discrete(
+    labels = function(rois) ifelse(
+      rois %in% sig_roi_labels,
+      paste0("★ ", rois),
+      rois
+    )
+  ) +
+  labs(x = NULL, y = NULL) +
+  theme_claustrum_heatmap() +
+  guides(
+    fill  = guide_colourbar(order = 1),
+    shape = guide_legend(order = 2)
+  )
+
+p_heat_prem_BLS_noleg <- p_heat +
+  theme(legend.position = "none") +
+  guides(
+    fill  = "none",
+    shape = "none"
+  )
+
+saveRDS(p_heat_prem_BLS_noleg,
+        here("outputs", "figures", "p_heat_prem_BLS_noleg.rds"))
+```
+
+# Analysis 3: Cognition at 8 years (K-ABC)
+
+### Setup
+
+```{r}
+cog8y_vars <- c("sif8", "stsed8", "stsgd8")
+
+dat_PT_cog8y <- dat_PT %>%
+  mutate(across(all_of(c(cp_vars, cog8y_vars)), ~ {
+    if (is.factor(.)) suppressWarnings(as.numeric(as.character(.))) else as.numeric(.)
+  }))
+```
+
+## GLM: CP \~ K-ABC score + age + sex (PT only)
+
+```{r}
+results_cog8y <- purrr::map_dfr(cog8y_vars, function(pred) {
+  purrr::map_dfr(cp_vars, function(dv) {
+
+    fml <- as.formula(paste(dv, "~", paste(c(pred, covars), collapse = " + ")))
+    df  <- dat_PT_cog8y[, all.vars(fml)] %>% na.omit()
+    if (nrow(df) < 5) return(NULL)
+
+    fit <- lm(fml, data = df)
+
+    td <- tidy(fit)
+    gl <- glance(fit)
+
+    row <- td %>% filter(term == pred)
+    if (!nrow(row)) return(NULL)
+
+    tibble(
+      predictor     = pred,
+      dv            = dv,
+      estimate      = row$estimate,
+      std.error     = row$std.error,
+      ci_lo         = estimate - 1.96 * std.error,
+      ci_hi         = estimate + 1.96 * std.error,
+      t_value       = row$statistic,
+      p.value       = row$p.value,
+      r.squared     = gl$r.squared,
+      adj.r.squared = gl$adj.r.squared,
+      n             = nrow(df)
+    )
+  })
+})
+
+# FDR across all predictors and ROIs
+results_cog8y <- results_cog8y%>%
+  mutate(p_adj_fdr = p.adjust(p.value, method = "fdr")) %>%
+  arrange(p.value)
+
+# FDR within each predictor across ROIs
+results_cog8y<- results_cog8y %>%
+  group_by(predictor) %>%
+  mutate(p_adj_fdr_by_predictor = p.adjust(p.value, method = "fdr")) %>%
+  ungroup()
+
+outfile_cog8y <- file.path(tab_dir, paste0("CP_cognitive8y_single_GLM_PTonly_", format(Sys.Date()), ".csv"))
+readr::write_csv2(results_cog8y, outfile_cog8y)
+message("Saved: ", outfile_cog8y)
+```
+
+# Analysis 4: Adult cognition
+
+### Setup
+
+CP z-scored within the PT group.
+
+```{r}
+cog_vars_fsiq   <- c("wie_gesiq")
+cog_vars_ant    <- c("ant_alerting","ant_orienting","ant_congruency")
+
+cog_all <- c(cog_vars_fsiq,
+             cog_vars_ant)
+
+dat_PT_cog <- dat_PT %>%
+  dplyr::mutate(
+    dplyr::across(dplyr::all_of(c(cp_vars, cog_all)), ~ {
+      if (is.factor(.)) suppressWarnings(as.numeric(as.character(.))) else as.numeric(.)
+    }),
+    dplyr::across(dplyr::all_of(cp_vars), ~ as.numeric(scale(.)))
+  )
+```
+
+## GLM: cognitive outcome \~ CP + age + sex (PT only)
+
+```{r}
+run_outcome_vs_each_cp <- function(outcome, family){
+  map_dfr(cp_vars, function(cp_col){
+    fml <- as.formula(paste(outcome, "~", paste(c(cp_col, covars), collapse = " + ")))
+    df  <- dat_PT_cog[, all.vars(fml)] %>% na.omit()
+    if (nrow(df) < 10) return(NULL)
+    fit <- lm(fml, data = df); td <- tidy(fit); gl <- glance(fit)
+    row <- td %>% filter(term == cp_col); if (!nrow(row)) return(NULL)
+    tibble(
+      family = family, outcome = outcome, dv_label = outcome,
+      predictor = cp_col, estimate = row$estimate, std.error = row$std.error, ci_lo         = estimate - 1.96 * std.error, ci_hi         = estimate + 1.96 * std.error,
+      t_value = row$statistic, p.value = row$p.value,
+      r.squared = gl$r.squared, adj.r.squared = gl$adj.r.squared, n = nrow(df)
+    )
+  }) %>%
+  mutate(outcome = factor(outcome)) %>%
+  group_by(outcome) %>%  # FDR within outcome across ROIs
+  mutate(p_adj_fdr_within_outcome = p.adjust(p.value, "fdr")) %>%
+  ungroup()
+}
+
+res_single <- bind_rows(
+  run_outcome_vs_each_cp("wie_gesiq", "FSIQ"),
+  run_outcome_vs_each_cp("ant_alerting","ANT"),
+  run_outcome_vs_each_cp("ant_orienting","ANT"),
+  run_outcome_vs_each_cp("ant_congruency","ANT"),
+) %>% arrange(outcome, p_adj_fdr_within_outcome, p.value)
+
+write_csv2(res_single, file.path(tab_dir, paste0("Cognition_singleROI_CP_PTonly_", format(Sys.Date()), ".csv")))
+```
+
+### Heatmap (Figure 5B)
+
+```{r}
+outcome_order <- c(
+  "wie_gesiq",
+  "ant_alerting","ant_orienting","ant_congruency"
+)
+outcome_labs <- c(
+  wie_gesiq      = "FSIQ",
+  ant_alerting   = "ANT:\nAlerting",
+  ant_orienting  = "ANT:\nOrienting",
+  ant_congruency = "ANT:\nCongruency"
+)
+
+heat_cog <- res_single %>%
+  mutate(
+    ROI = dplyr::recode(predictor, !!!roi_labels, .default = predictor),
+    Outcome = factor(
+      as.character(outcome),
+      levels = outcome_order,
+      labels = outcome_labs[outcome_order]
+    ),
+    neglog10p = -log10(p.value) * sign(estimate),
+    sig_unc   = p.value < 0.05,
+    sig_fdr   = p_adj_fdr_within_outcome < 0.05,
+    sig_type  = factor(
+      dplyr::case_when(
+        sig_fdr ~ "FDR < .05",
+        sig_unc ~ "p < .05 (uncorr.)",
+        TRUE    ~ NA_character_
+      ),
+      levels = sig_levels
+    )
+  ) %>%
+  mutate(ROI = factor(ROI, levels = rev(unname(roi_labels))))
+
+dummy_sig_cog <- data.frame(
+  Outcome = factor(levels(heat_cog$Outcome)[1],
+                   levels = levels(heat_cog$Outcome)),
+  ROI      = factor(levels(heat_cog$ROI)[1],
+                    levels = levels(heat_cog$ROI)),
+  sig_type = factor(sig_levels, levels = sig_levels)
+)
+
+p_heat_cog <- ggplot(heat_cog, aes(x = Outcome, y = ROI, fill = neglog10p)) +
+  geom_tile() +
+  geom_point(
+    data   = subset(heat_cog, !is.na(sig_type)),
+    aes(shape = sig_type),
+    size   = 2.2,
+    stroke = 0.8,
+    colour = "black",
+    na.rm  = TRUE
+  ) +
+  geom_point(
+    data        = dummy_sig_cog,
+    aes(x = Outcome, y = ROI, shape = sig_type),
+    inherit.aes = FALSE,
+    alpha       = 0,
+    show.legend = TRUE
+  ) +
+  scale_shape_manual(
+    name   = "Significance",
+    values = c("p < .05 (uncorr.)" = 1,
+               "FDR < .05"         = 16),
+    breaks = sig_levels,
+    drop   = FALSE
+  ) +
+  scale_fill_gradient2(
+    name = "Sign & strength\n(-log10 p)",
+    low = "#4575B4", mid = "white", high = "#D73027",
+    limits = c(-3, 3), midpoint = 0, oob = scales::squish
+  ) +
+  scale_y_discrete(
+    labels = function(rois) ifelse(
+      rois %in% sig_roi_labels,
+      paste0("★ ", rois),
+      rois
+    )
+  ) +
+  labs(x = NULL, y = NULL) +
+  theme_claustrum_heatmap() +
+  guides(
+    fill  = guide_colourbar(order = 1),
+    shape = guide_legend(order = 2)
+  )
+
+p_heat_cog_BLS_noleg <- p_heat_cog +
+  theme(legend.position = "none") +
+  guides(
+    fill  = "none",
+    shape = "none"
+  )
+
+saveRDS(p_heat_cog_BLS_noleg,
+        here("outputs", "figures", "p_heat_cog_BLS_noleg.rds"))
+```
+
+# Save checkpoints
+
+```{r}
+dir.create(here::here("checkpoints"), showWarnings = FALSE)
+
+saveRDS(
+  list(
+    cp_vars    = cp_vars,
+    covars     = covars,
+    cog_all    = cog_all,
+    dat_PT     = dat_PT,
+    dat_PT_cog = dat_PT_cog,
+    res_single = res_single
+  ),
+  here::here("checkpoints", "glm_checkpoint.rds")
+)
+```

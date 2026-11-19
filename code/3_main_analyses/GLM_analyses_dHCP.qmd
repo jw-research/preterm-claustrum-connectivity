@@ -1,0 +1,523 @@
+---
+title: "Claustrum Connectivity in Prematurity GLM analyses dHCP"
+author: "Jil Wendt"
+format: html
+editor: visual
+---
+
+GLMs in preterm-born neonates (dHCP cohort): perinatal variables, SES and cognition at 18 months (Bayley-III). Heatmap panels for Figures 4, 5 and S4.
+
+- Input: `data/dHCP_CP_cog_ses.csv`
+- Outputs:
+  - `outputs/tables/dHCP_CP_Prematurity_single_GLM_PTonly_<date>.csv`: Table S8 (results/perinatal_GLM_CP_dHCP.csv)
+  - `outputs/tables/dHCP_CP_early_SES_<date>.csv` (results/env_GLM_CP_dHCP.csv)
+  - `outputs/tables/dHCP_CP_18mo_cog_<date>.csv`: Table S16 (results/cognition_GLM_CP_dHCP.csv)
+  - `outputs/figures/p_heat_dHCP.rds`, `p_heat_SES_dHCP.rds`, `p_heat_cog_dHCP.rds`: heatmap panels, combined in `manuscript_figures.qmd`
+
+# Setup
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(broom)
+library(here)
+
+tab_dir <- here::here("outputs", "tables")
+```
+
+#### Helper Functions
+
+```{r}
+theme_claustrum_heatmap <- function() {
+  theme_minimal(base_size = 11) +
+    theme(
+      panel.grid      = element_blank(),
+      axis.title.x    = element_blank(),
+      axis.title.y    = element_blank(),
+      axis.text.x     = element_text(angle = 30, hjust = 1, vjust = 1,
+                                     margin = margin(t = 4)),
+      axis.text.y     = element_text(margin = margin(r = 4)),
+      legend.title    = element_text(size = 10),
+      legend.key.height = unit(0.5, "cm"),
+      plot.margin     = margin(t = 5.5, r = 5.5, b = 5.5, l = 5.5)
+    )
+}
+```
+
+#### Lookup Tables for Variable Names
+
+```{r}
+roi_labels <- c(
+  l_claustrum_ac_occ_l  = "Occipital Associative (L)",
+  r_claustrum_ac_occ_r  = "Occipital Associative (R)",
+  l_claustrum_ac_par_l  = "Parietal Associative (L)",
+  r_claustrum_ac_par_r  = "Parietal Associative (R)",
+  l_claustrum_ac_pfc_l  = "Prefrontal Associative (L)",
+  r_claustrum_ac_pfc_r  = "Prefrontal Associative (R)",
+  l_claustrum_ac_temp_l = "Temporal Associative (L)",
+  r_claustrum_ac_temp_r = "Temporal Associative (R)",
+  l_claustrum_c_pos_l   = "Posterior Cingulate (L)",
+  r_claustrum_c_pos_r   = "Posterior Cingulate (R)",
+  l_claustrum_c_ant_l   = "Anterior Cingulate (L)",
+  r_claustrum_c_ant_r   = "Anterior Cingulate (R)",
+  l_claustrum_pc_aud_l  = "Primary Auditory (L)",
+  r_claustrum_pc_aud_r  = "Primary Auditory (R)",
+  l_claustrum_pc_mot_l  = "Primary Motor (L)",
+  r_claustrum_pc_mot_r  = "Primary Motor (R)",
+  l_claustrum_pc_sens_l = "Primary Somatosensory (L)",
+  r_claustrum_pc_sens_r = "Primary Somatosensory (R)",
+  l_claustrum_pc_vis_l  = "Primary Visual (L)",
+  r_claustrum_pc_vis_r  = "Primary Visual (R)",
+  l_claustrum_sc_hip_l  = "Hippocampus (L)",
+  r_claustrum_sc_hip_r  = "Hippocampus (R)"
+)
+
+sig_levels <- c("p < .05 (uncorr.)", "pFDR < .05")
+```
+
+## Load data
+
+```{r}
+dat_dHCP <- read_delim(
+  here("data", "dHCP_CP_cog_ses.csv"),
+  delim = ",",
+  trim_ws = TRUE,
+  locale = locale(decimal_mark = "."),
+  na = c(""," ","NA", "NaN", "n/a", ".", "-9999","999"),
+  col_types = cols(
+    Subject_ID = col_character(),
+    Session_ID = col_character()
+  ),
+  guess_max = 10000
+) |> janitor::clean_names()
+
+dat_dHCP <- dat_dHCP %>%
+  mutate(
+    group = factor(case_when(
+      group == "term" ~ "FT",
+      group == "pre" ~ "PT",
+      TRUE ~ NA_character_
+    ), levels = c("FT", "PT")),
+  )
+
+dat_dHCP_PT <- dat_dHCP %>%
+  dplyr::filter(group == "PT")
+```
+
+```{r}
+# ROIs with FDR-significant group differences in CP
+sig_roi_codes_dHCP <- c(
+  "r_claustrum_ac_par_r",
+  "l_claustrum_ac_par_l",
+  "r_claustrum_ac_pfc_r",
+  "l_claustrum_ac_pfc_l",
+  "r_claustrum_ac_temp_r",
+  "l_claustrum_pc_aud_l",
+  "l_claustrum_pc_mot_l",
+  "r_claustrum_pc_sens_r",
+  "r_claustrum_pc_vis_r",
+  "l_claustrum_pc_vis_l",
+  "r_claustrum_c_pos_r",
+  "l_claustrum_c_pos_l",
+  "r_claustrum_sc_hip_r"
+)
+
+sig_roi_labels_dHCP <- unname(roi_labels[sig_roi_codes_dHCP])
+```
+
+# Analysis 1: Impact of degree of prematurity
+
+### Setup
+
+```{r}
+cp_vars_dHCP <- grep("^l_|^r_", names(dat_dHCP_PT), value = TRUE)
+prematurity_vars <- c("birth_age", "birth_weight")
+covars <- c("scan_age", "sex")
+
+stopifnot(all(c(prematurity_vars, covars) %in% names(dat_dHCP_PT)))
+
+dat_dHCP_PT_num <- dat_dHCP_PT %>%
+  mutate(across(all_of(c(cp_vars_dHCP, prematurity_vars)), ~ {
+    if (is.factor(.)) suppressWarnings(as.numeric(as.character(.))) else as.numeric(.)
+  }))
+```
+
+## GLM: CP \~ perinatal variable + age + sex (one predictor at a time, PT only)
+
+```{r}
+results_prematurity_dHCP <- purrr::map_dfr(prematurity_vars, function(pred) {
+  purrr::map_dfr(cp_vars_dHCP, function(dv) {
+
+    fml <- as.formula(paste(dv, "~", paste(c(pred, covars), collapse = " + ")))
+    df  <- dat_dHCP_PT_num[, all.vars(fml)] %>% na.omit()
+    if (nrow(df) < 5) return(NULL)
+
+    fit <- lm(fml, data = df)
+
+    td <- tidy(fit)
+    gl <- glance(fit)
+
+    row <- td %>% filter(term == pred)
+    if (!nrow(row)) return(NULL)
+
+    tibble(
+      predictor     = pred,
+      dv            = dv,
+      estimate      = row$estimate,
+      std.error     = row$std.error,
+      ci_lo         = estimate - 1.96 * std.error,
+      ci_hi         = estimate + 1.96 * std.error,
+      t_value       = row$statistic,
+      p.value       = row$p.value,
+      r.squared     = gl$r.squared,
+      adj.r.squared = gl$adj.r.squared,
+      n             = nrow(df)
+    )
+  })
+})
+
+results_prematurity_dHCP <- results_prematurity_dHCP %>%
+  mutate(p_adj_fdr = p.adjust(p.value, method = "fdr")) %>%
+  arrange(p.value)
+
+results_prematurity_dHCP <- results_prematurity_dHCP %>%
+  group_by(predictor) %>%
+  mutate(p_adj_fdr_by_predictor = p.adjust(p.value, method = "fdr")) %>%
+  ungroup()
+
+outfile_prem_dHCP <- file.path(tab_dir, paste0("dHCP_CP_Prematurity_single_GLM_PTonly_", format(Sys.Date()), ".csv"))
+readr::write_csv2(results_prematurity_dHCP, outfile_prem_dHCP)
+message("Saved: ", outfile_prem_dHCP)
+```
+
+### Heatmap (Figure S4A)
+
+```{r}
+pred_order <- c("birth_weight","birth_age")
+pred_labs  <- c(
+  birth_weight  = "Birth weight\n(per 100 g)",
+  birth_age   = "Gestational age\n(per week)"
+)
+
+heat_df <- results_prematurity_dHCP %>%
+  mutate(
+    ROI = dplyr::recode(dv, !!!roi_labels, .default = dv),
+    estimate_scaled  = if_else(predictor == "birth_weight", estimate * 100, estimate),
+    std.error_scaled = if_else(predictor == "birth_weight", std.error * 100, std.error),
+    predictor_label = {
+      mapped <- pred_labs[predictor]
+      mapped[is.na(mapped)] <- predictor[is.na(mapped)]
+      unname(mapped)
+    },
+    neglog10p = -log10(p.value) * sign(estimate_scaled),
+
+    sig_unc   = p.value < 0.05,
+    sig_fdr_p = if ("p_adj_fdr_by_predictor" %in% names(.)) p_adj_fdr_by_predictor < 0.05 else FALSE,
+    sig_type  = factor(
+      dplyr::case_when(
+        sig_fdr_p ~ "pFDR < .05",
+        sig_unc   ~ "p < .05 (uncorr.)",
+        TRUE      ~ NA_character_
+      ),
+      levels = sig_levels
+    )
+  ) %>%
+  mutate(
+    predictor_label = factor(predictor_label, levels = pred_labs[pred_order]),
+    ROI = factor(ROI, levels = rev(sort(unique(ROI))))
+  )
+
+roi_order <- unname(roi_labels)
+heat_df <- heat_df %>%
+  mutate(
+    ROI = factor(ROI, levels = rev(roi_order[roi_order %in% ROI]))
+  )
+
+p_heat <- ggplot(heat_df, aes(x = predictor_label, y = ROI, fill = neglog10p)) +
+  geom_tile() +
+  geom_point(
+    data   = subset(heat_df, !is.na(sig_type)),
+    aes(shape = sig_type),
+    size   = 2.2,
+    stroke = 0.8,
+    colour = "black"
+  ) +
+  scale_shape_manual(
+    name   = "Significance",
+    values = c("p < .05 (uncorr.)" = 1,
+               "pFDR < .05"         = 16),
+    breaks = sig_levels,
+    drop   = FALSE
+  ) +
+  scale_fill_gradient2(
+    name = "Sign & strength\n(-log10 p)",
+    low = "#4575B4", mid = "white", high = "#D73027",
+    limits = c(-3, 3), midpoint = 0, oob = scales::squish
+  ) +
+  scale_y_discrete(
+    labels = function(rois) ifelse(rois %in% sig_roi_labels_dHCP,
+                                   paste0("★ ", rois), rois)
+  ) +
+  labs(x = NULL, y = NULL) +
+  theme_claustrum_heatmap() +
+  guides(
+    fill  = guide_colourbar(order = 1),
+    shape = guide_legend(order = 2)
+  )
+
+p_heat_dHCP <- p_heat
+saveRDS(p_heat_dHCP, here("outputs", "figures", "p_heat_dHCP.rds"))
+```
+
+# Analysis 2: Influence of SES
+
+### Setup
+
+```{r}
+early_vars <- c("ses_score")
+
+stopifnot(all(c(early_vars, covars) %in% names(dat_dHCP_PT)))
+
+dat_dHCP_PT_num <- dat_dHCP_PT %>%
+  mutate(across(all_of(c(cp_vars_dHCP, early_vars, prematurity_vars)), ~ {
+    if (is.factor(.)) suppressWarnings(as.numeric(as.character(.))) else as.numeric(.)
+  }))
+```
+
+## GLM: CP \~ SES + age + sex (PT only)
+
+```{r}
+results_SES_dHCP <- map_dfr(cp_vars_dHCP, function(dv) {
+
+  fml <- as.formula(paste(dv, "~ ses_score +", paste(covars, collapse = " + ")))
+  df  <- dat_dHCP_PT_num[, all.vars(fml)] %>% na.omit()
+  if (nrow(df) < 5) return(NULL)
+
+  fit <- lm(fml, data = df)
+  td  <- tidy(fit)
+  gl  <- glance(fit)
+
+  row <- td %>% filter(term == "ses_score")
+  if (!nrow(row)) return(NULL)
+
+  tibble(
+    dv            = dv,
+    predictor     = "ses_score",
+    estimate      = row$estimate,
+    std.error     = row$std.error,
+    ci_lo         = estimate - 1.96 * std.error,
+    ci_hi         = estimate + 1.96 * std.error,
+    t_value       = row$statistic,
+    p.value       = row$p.value,
+    r.squared     = gl$r.squared,
+    adj.r.squared = gl$adj.r.squared,
+    n             = nrow(df)
+  )
+})
+
+results_SES_dHCP <- results_SES_dHCP %>%
+  mutate(
+    p_adj_fdr = p.adjust(p.value, method = "fdr")
+  ) %>%
+  arrange(p_adj_fdr)
+
+outfile_single_num <- file.path(tab_dir, paste0("dHCP_CP_early_SES_", format(Sys.Date()), ".csv"))
+write_csv2(results_SES_dHCP, outfile_single_num)
+message("Saved: ", outfile_single_num)
+```
+
+### Heatmap (Figure 4A)
+
+```{r}
+labels_map <- c(ses_score = "SES score")
+
+heat_df <- results_SES_dHCP %>%
+  mutate(
+    ROI = dplyr::recode(dv, !!!roi_labels, .default = dv),
+    predictor_label = labels_map[predictor],
+    neglog10p = -log10(p.value) * sign(estimate),
+    sig_unc   = p.value < 0.05,
+    sig_fdr   = p_adj_fdr < 0.05,
+    sig_type  = factor(
+      dplyr::case_when(
+        sig_fdr ~ "pFDR < .05",
+        sig_unc ~ "p < .05 (uncorr.)",
+        TRUE    ~ NA_character_
+      ),
+      levels = sig_levels
+    )
+  ) %>%
+  mutate(
+    predictor_label = factor(predictor_label, levels = "SES score"),
+    ROI = factor(ROI, levels = rev(unname(roi_labels)))
+  )
+
+dummy_sig <- data.frame(
+  predictor_label = factor("SES score",
+                           levels = levels(heat_df$predictor_label)),
+  ROI      = factor(levels(heat_df$ROI)[1],
+                    levels = levels(heat_df$ROI)),
+  sig_type = factor(sig_levels, levels = sig_levels)
+)
+
+p_heat_SES_dHCP <- ggplot(heat_df, aes(x = predictor_label, y = ROI, fill = neglog10p)) +
+  geom_tile() +
+  geom_point(
+    data   = subset(heat_df, !is.na(sig_type)),
+    aes(shape = sig_type),
+    size   = 2.3,
+    stroke = 0.8,
+    colour = "black",
+    na.rm  = TRUE
+  ) +
+  geom_point(
+    data        = dummy_sig,
+    aes(x = predictor_label, y = ROI, shape = sig_type),
+    inherit.aes = FALSE,
+    alpha       = 0,
+    show.legend = TRUE
+  ) +
+  scale_shape_manual(
+    name   = "Significance",
+    values = c("p < .05 (uncorr.)" = 1,
+               "pFDR < .05"         = 16),
+    breaks = sig_levels,
+    drop   = FALSE
+  ) +
+  scale_fill_gradient2(
+    name = "Sign & strength\n(-log10 p)",
+    low = "#4575B4", mid = "white", high = "#D73027",
+    limits = c(-3, 3), midpoint = 0
+  ) +
+  scale_y_discrete(
+    labels = function(rois) ifelse(
+      rois %in% sig_roi_labels_dHCP,
+      paste0("★ ", rois),
+      rois
+    )
+  ) +
+  labs(x = NULL, y = NULL) +
+  theme_claustrum_heatmap() +
+  guides(
+    fill  = guide_colourbar(order = 1),
+    shape = guide_legend(order = 2)
+  )
+
+saveRDS(p_heat_SES_dHCP, here("outputs", "figures", "p_heat_SES_dHCP.rds"))
+```
+
+# Analysis 3: Influence of neonatal CP on cognition
+
+### Setup
+
+```{r}
+cog_var <- "bsid_cog_composite"
+stopifnot(cog_var %in% names(dat_dHCP_PT))
+```
+
+## GLM: Bayley-III cognition \~ CP + age + sex (PT only)
+
+```{r}
+results_CP_to_cog_dHCP <- map_dfr(cp_vars_dHCP, function(pred) {
+
+  fml <- as.formula(paste(cog_var, "~", paste(c(pred, covars), collapse = " + ")))
+  df  <- dat_dHCP_PT_num[, all.vars(fml)] %>% na.omit()
+  if (nrow(df) < 8) return(NULL)
+
+  fit <- lm(fml, data = df)
+  td  <- tidy(fit)
+  gl  <- glance(fit)
+
+  row <- td %>% filter(term == pred)
+  if (!nrow(row)) return(NULL)
+
+  tibble(
+    predictor     = pred,
+    dv            = cog_var,
+    estimate      = row$estimate,
+    std.error     = row$std.error,
+    ci_lo         = estimate - 1.96 * std.error,
+    ci_hi         = estimate + 1.96 * std.error,
+    t_value       = row$statistic,
+    p.value       = row$p.value,
+    r.squared     = gl$r.squared,
+    adj.r.squared = gl$adj.r.squared,
+    n             = nrow(df)
+  )
+})
+
+results_CP_to_cog_dHCP <- results_CP_to_cog_dHCP %>%
+  mutate(
+    p_adj_fdr = p.adjust(p.value, method = "fdr")
+  ) %>%
+  arrange(p_adj_fdr, p.value)
+
+results_CP_to_cog_dHCP <- results_CP_to_cog_dHCP %>%
+  group_by(predictor) %>%
+  mutate(p_adj_fdr_by_predictor = p.adjust(p.value, method = "fdr")) %>%
+  ungroup()
+
+outfile_dHCP_cog <- file.path(tab_dir, paste0("dHCP_CP_18mo_cog_", format(Sys.Date()), ".csv"))
+write_csv2(results_CP_to_cog_dHCP, outfile_dHCP_cog)
+message("Saved: ", outfile_dHCP_cog)
+```
+
+### Heatmap (Figure 5A)
+
+```{r}
+heat_df <- results_CP_to_cog_dHCP %>%
+  mutate(
+    ROI = dplyr::recode(predictor, !!!roi_labels, .default = predictor),
+    neglog10p = -log10(p.value) * sign(estimate),
+    sig_unc   = p.value < 0.05,
+    sig_fdr   = p_adj_fdr < 0.05,
+    sig_type  = factor(
+      dplyr::case_when(
+        sig_fdr ~ "pFDR < .05",
+        sig_unc ~ "p < .05 (uncorr.)",
+        TRUE    ~ NA_character_
+      ),
+      levels = sig_levels
+    )
+  ) %>%
+  mutate(
+    ROI = factor(ROI, levels = rev(unname(roi_labels))),
+    predictor_label = "Bayley III cognition\nat 18 months"
+  )
+
+p_heat_CP_to_cog <- ggplot(heat_df, aes(x = predictor_label, y = ROI, fill = neglog10p)) +
+  geom_tile() +
+  geom_point(
+    data   = subset(heat_df, !is.na(sig_type)),
+    aes(shape = sig_type),
+    size   = 2.2,
+    stroke = 0.8,
+    colour = "black"
+  ) +
+  scale_shape_manual(
+    name   = "Significance",
+    values = c("p < .05 (uncorr.)" = 1,
+               "pFDR < .05"         = 16),
+    breaks = sig_levels,
+    drop   = FALSE
+  ) +
+  scale_fill_gradient2(
+    name = "Sign & strength\n(-log10 p)",
+    low = "#4575B4", mid = "white", high = "#D73027",
+    limits = c(-3, 3), midpoint = 0, oob = scales::squish
+  ) +
+  scale_y_discrete(
+    labels = function(rois) ifelse(rois %in% sig_roi_labels_dHCP,
+                                   paste0("★ ", rois), rois)
+  ) +
+  labs(x = NULL, y = NULL) +
+  theme_claustrum_heatmap() +
+  guides(
+    fill  = guide_colourbar(order = 1),
+    shape = guide_legend(order = 2)
+  )
+
+saveRDS(p_heat_CP_to_cog, here("outputs", "figures", "p_heat_cog_dHCP.rds"))
+```

@@ -1,0 +1,23 @@
+ROI;dHCP_d_cp;dHCP_d_cd;dHCP_agreement;BLS_d_cp;BLS_d_cd;BLS_agreement
+Occipital Associative (L);0,050;-0,178;Neither;0,453;0,610;Both (FT > PT)
+Occipital Associative (R);-0,111;-0,195;Neither;0,719;0,794;Both (FT > PT)
+Parietal Associative (L);0,615;0,217;CP only (FT > PT);0,608;0,621;Both (FT > PT)
+Parietal Associative (R);0,593;0,259;CP only (FT > PT);0,331;0,317;Neither
+Prefrontal Associative (L);0,586;-0,004;CP only (FT > PT);-0,762;0,065;CP only (FT < PT)
+Prefrontal Associative (R);0,973;0,440;Both (FT > PT);-0,320;0,152;Neither
+Temporal Associative (L);0,053;-0,433;CD only (FT < PT);-0,435;-0,131;CP only (FT < PT)
+Temporal Associative (R);0,521;-0,003;CP only (FT > PT);-0,379;-0,168;Neither
+Posterior Cingulate (L);0,761;0,672;Both (FT > PT);0,171;0,272;Neither
+Posterior Cingulate (R);0,659;0,589;Both (FT > PT);0,546;0,565;Both (FT > PT)
+Anterior Cingulate (L);0,014;0,001;Neither;0,303;0,410;Neither
+Anterior Cingulate (R);0,053;0,139;Neither;0,282;0,283;Neither
+Primary Auditory (L);-0,393;-0,467;Both (FT < PT);0,133;0,137;Neither
+Primary Auditory (R);-0,070;-0,149;Neither;0,101;0,063;Neither
+Primary Motor (L);0,430;0,351;CP only (FT > PT);-0,093;0,004;Neither
+Primary Motor (R);0,031;0,038;Neither;-0,442;-0,325;CP only (FT < PT)
+Primary Somatosensory (L);0,236;0,134;Neither;0,312;0,346;Neither
+Primary Somatosensory (R);0,539;0,392;Both (FT > PT);0,012;0,120;Neither
+Primary Visual (L);0,787;0,716;Both (FT > PT);0,284;0,394;Neither
+Primary Visual (R);0,575;0,531;Both (FT > PT);0,439;0,474;Both (FT > PT)
+Hippocampus (L);0,277;0,082;Neither;0,242;0,315;Neither
+Hippocampus (R);0,523;0,408;Both (FT > PT);0,280;0,241;Neither

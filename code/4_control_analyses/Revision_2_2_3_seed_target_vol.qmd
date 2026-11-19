@@ -1,0 +1,222 @@
+---
+title: "Claustrum Connectivity in Prematurity Seed and Target Volumes (BLS)"
+author: "Jil Wendt"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+Claustrum and target ROI volumes in preterm- (VP/VLBW) and full-term-born adults (BLS cohort; Supplementary control and robustness analyses, section 2). Mean ± SD and range per group; groups compared with two-sample t-tests, uncorrected.
+
+- Input: `data/adults_harmonized_control_volumes.csv` (claustrum volume in structural space, seed volume and voxels and target volumes in diffusion space, demographics)
+- Outputs (`outputs/tables`):
+  - `Revision_volumes_seed_FTvsPT_<date>.csv`: claustrum volumes (results/volumes_seed_BLS.csv)
+  - `Revision_volumes_target_FTvsPT_<date>.csv`: target volumes (results/volumes_target_BLS.csv)
+
+# 1 Setup
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(here)
+
+tab_dir <- here::here("outputs", "tables")
+```
+
+#### Lookup tables for variable names
+
+```{r}
+roi_labels <- c(
+  cp_ac_occ_l_ipsi  = "Occipital Associative (L)",
+  cp_ac_occ_r_ipsi  = "Occipital Associative (R)",
+  cp_ac_par_l_ipsi  = "Parietal Associative (L)",
+  cp_ac_par_r_ipsi  = "Parietal Associative (R)",
+  cp_ac_pfc_l_ipsi  = "Prefrontal Associative (L)",
+  cp_ac_pfc_r_ipsi  = "Prefrontal Associative (R)",
+  cp_ac_temp_l_ipsi = "Temporal Associative (L)",
+  cp_ac_temp_r_ipsi = "Temporal Associative (R)",
+  cp_c_pos_l_ipsi   = "Posterior Cingulate (L)",
+  cp_c_pos_r_ipsi   = "Posterior Cingulate (R)",
+  cp_c_ant_l_ipsi   = "Anterior Cingulate (L)",
+  cp_c_ant_r_ipsi   = "Anterior Cingulate (R)",
+  cp_pc_aud_l_ipsi  = "Primary Auditory (L)",
+  cp_pc_aud_r_ipsi  = "Primary Auditory (R)",
+  cp_pc_mot_l_ipsi  = "Primary Motor (L)",
+  cp_pc_mot_r_ipsi  = "Primary Motor (R)",
+  cp_pc_sens_l_ipsi = "Primary Somatosensory (L)",
+  cp_pc_sens_r_ipsi = "Primary Somatosensory (R)",
+  cp_pc_vis_l_ipsi  = "Primary Visual (L)",
+  cp_pc_vis_r_ipsi  = "Primary Visual (R)",
+  cp_sc_hip_l_ipsi  = "Hippocampus (L)",
+  cp_sc_hip_r_ipsi  = "Hippocampus (R)"
+)
+```
+
+### Load data
+
+```{r}
+dat <- read_delim(
+  here::here("data", "adults_harmonized_control_volumes.csv"),
+  delim = ";",
+  trim_ws = TRUE,
+  locale = locale(decimal_mark = ","),
+  na = c(""," ","NA", "NaN", "n/a", ".", "-9999","999"),
+  col_types = cols(
+    Subject = col_character(),
+    ID      = col_character()
+  ),
+  guess_max = 10000
+) |> janitor::clean_names()
+
+# --- recode and name important factors ---
+dat <- dat %>%
+  mutate(
+    group = factor(case_when(
+      groupcode == 0 ~ "FT",
+      groupcode == 1 ~ "PT",
+      TRUE ~ NA_character_
+    ), levels = c("FT", "PT")),
+
+    sex = factor(case_when(
+      sex == 1 ~ "Male",
+      sex == 2 ~ "Female",
+      TRUE ~ NA_character_
+    ), levels = c("Female", "Male"))
+  )
+```
+
+# 2 Table summary of seed and target volumes
+
+```{r}
+summ_vol_one <- function(var, label, digits = 0){
+  d <- dat |>
+    dplyr::select(group, dplyr::all_of(var)) |>
+    tidyr::drop_na()
+  
+  x <- d[[var]][d$group == "FT"]
+  y <- d[[var]][d$group == "PT"]
+  
+  use_welch <- var.test(x, y)$p.value < 0.05
+  tt <- t.test(x, y, var.equal = !use_welch)
+  
+  ms <- function(z) {
+    paste0(
+      formatC(mean(z), format = "f", digits = digits),
+      " ± ",
+      formatC(sd(z), format = "f", digits = digits)
+    )
+  }
+  
+  rng <- function(z) {
+    paste0(
+      "[",
+      formatC(min(z), format = "f", digits = digits),
+      "–",
+      formatC(max(z), format = "f", digits = digits),
+      "]"
+    )
+  }
+  
+  df_txt <- if (use_welch) {
+    sprintf("%.1f", unname(tt$parameter))
+  } else {
+    sprintf("%d", as.integer(round(unname(tt$parameter))))
+  }
+  
+  tibble(
+    Variable = label,
+    n_FT = length(x),
+    FT = ms(x),
+    range_FT = rng(x),
+    n_PT = length(y),
+    PT = ms(y),
+    range_PT = rng(y),
+    mean_diff = mean(x) - mean(y),   # positive = larger in FT
+    t_df = sprintf(
+      "%.2f(%s)%s",
+      unname(tt$statistic),
+      df_txt,
+      if (use_welch) "*" else ""
+    ),
+    p = tt$p.value
+  )
+}
+
+fmt_p <- function(p) {
+  ifelse(p < .001, "<.001", sprintf("%.3f", p))
+}
+
+# Claustrum seed voxels/volumes
+seed_spec <- tibble::tribble(
+  ~var,           ~label,                                             ~digits,
+  "struct_vol_l", "Claustrum volume, structural space, L (mm³)",       0,
+  "struct_vol_r", "Claustrum volume, structural space, R (mm³)",       0,
+  "seed_vol_l",   "Claustrum seed volume, diffusion space, L (mm³)",   0,
+  "seed_vol_r",   "Claustrum seed volume, diffusion space, R (mm³)",   0,
+  "seed_vox_l",   "Claustrum seed voxels, diffusion space, L",         0,
+  "seed_vox_r",   "Claustrum seed voxels, diffusion space, R",         0
+)
+
+stopifnot(all(sapply(dat[seed_spec$var], is.numeric)))
+
+res_seed <- purrr::pmap_dfr(seed_spec, summ_vol_one)
+
+# Target volumes
+target_vars <- grep("^target_vol_", names(dat), value = TRUE)
+
+stopifnot(
+  length(target_vars) == 22,
+  all(sapply(dat[target_vars], is.numeric))
+)
+
+target_spec <- tibble(var = target_vars) |>
+  mutate(
+    label = dplyr::recode(
+      sub("^target_vol_", "cp_", var),
+      !!!roi_labels,
+      .default = var
+    ),
+    digits = 0
+  ) |>
+  arrange(match(
+    sub("^target_vol_", "cp_", var),
+    names(roi_labels)
+  ))
+
+res_target <- purrr::pmap_dfr(target_spec, summ_vol_one)
+
+# Format as tables
+tab_seed <- res_seed |>
+  transmute(
+    Variable,
+    `FT mean ± SD [range]` = paste(FT, range_FT),
+    `PT mean ± SD [range]` = paste(PT, range_PT),
+    `Mean difference (FT − PT)` = round(mean_diff, 0),
+    `t(df)` = t_df,
+    P = fmt_p(p)
+  )
+
+tab_target <- res_target |>
+  transmute(
+    Variable,
+    `FT mean ± SD [range]` = paste(FT, range_FT),
+    `PT mean ± SD [range]` = paste(PT, range_PT),
+    `Mean difference (FT − PT)` = round(mean_diff, 0),
+    `t(df)` = t_df,
+    P = fmt_p(p)
+  )
+
+# save outputs
+readr::write_excel_csv2(
+  tab_seed,
+  file.path(tab_dir, paste0("Revision_volumes_seed_FTvsPT_", Sys.Date(), ".csv"))
+)
+
+readr::write_excel_csv2(
+  tab_target,
+  file.path(tab_dir, paste0("Revision_volumes_target_FTvsPT_", Sys.Date(), ".csv"))
+)
+```

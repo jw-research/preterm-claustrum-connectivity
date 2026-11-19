@@ -1,0 +1,423 @@
+---
+title: "Claustrum Connectivity in Prematurity dHCP outlier analysis"
+author: "Jil Wendt"
+format: html
+editor: visual
+---
+
+Outlier check and group comparison of claustrum CP between preterm- and full-term-born neonates (dHCP cohort). ANCOVA per target ROI (CP \~ group + age at scan + sex), FDR correction across the 22 target ROIs; repeated after per-ROI exclusion of outlier observations (IQR criterion). Descriptive statistics per ROI with two-sample t-tests (Welch-corrected if an F-test indicates unequal variances).
+
+- Input: `data/dHCP_CP_cog_ses.csv`
+- Outputs:
+  - `outputs/tables/dHCP_GroupComparison_CP_FTvsPT_TypeIII_<date>.csv` (results/groupcomp_CP_ANCOVA_dHCP.csv)
+  - `outputs/tables/dHCP_GroupComparison_CP_FTvsPT_TypeIII_excl<date>.csv` (results/groupcomp_CP_ANCOVA_dHCP_outliers_excluded.csv)
+  - `outputs/tables/dHCP_CP_ROI_summary_<date>.csv` (results/descriptives_CP_dHCP.csv)
+  - `outputs/figures/dHCP_outlier_counts_per_ROI_<date>.png`: Supplementary Figure S5
+
+# Setup
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(here)
+library(car)
+library(emmeans)
+
+fig_dir <- here::here("outputs", "figures")
+tab_dir <- here::here("outputs", "tables")
+```
+
+#### Helper Functions
+
+```{r}
+save_plot_png <- function(plot, filename, width = 9, height = 7, dpi = 300, bg = "white") {
+  outfile <- file.path(
+    fig_dir,
+    paste0(filename, "_", format(Sys.Date()), ".png")
+  )
+  ggplot2::ggsave(outfile, plot = plot, width = width, height = height, dpi = dpi, bg = "white")
+  message("Plot saved to: ", outfile)
+  return(outfile)
+}
+```
+
+#### Lookup Tables for Variable Names
+
+```{r}
+roi_labels <- c(
+  l_claustrum_ac_occ_l  = "Occipital Associative (L)",
+  r_claustrum_ac_occ_r  = "Occipital Associative (R)",
+  l_claustrum_ac_par_l  = "Parietal Associative (L)",
+  r_claustrum_ac_par_r  = "Parietal Associative (R)",
+  l_claustrum_ac_pfc_l  = "Prefrontal Associative (L)",
+  r_claustrum_ac_pfc_r  = "Prefrontal Associative (R)",
+  l_claustrum_ac_temp_l = "Temporal Associative (L)",
+  r_claustrum_ac_temp_r = "Temporal Associative (R)",
+  l_claustrum_c_pos_l   = "Posterior Cingulate (L)",
+  r_claustrum_c_pos_r   = "Posterior Cingulate (R)",
+  l_claustrum_c_ant_l   = "Anterior Cingulate (L)",
+  r_claustrum_c_ant_r   = "Anterior Cingulate (R)",
+  l_claustrum_pc_aud_l  = "Primary Auditory (L)",
+  r_claustrum_pc_aud_r  = "Primary Auditory (R)",
+  l_claustrum_pc_mot_l  = "Primary Motor (L)",
+  r_claustrum_pc_mot_r  = "Primary Motor (R)",
+  l_claustrum_pc_sens_l = "Primary Somatosensory (L)",
+  r_claustrum_pc_sens_r = "Primary Somatosensory (R)",
+  l_claustrum_pc_vis_l  = "Primary Visual (L)",
+  r_claustrum_pc_vis_r  = "Primary Visual (R)",
+  l_claustrum_sc_hip_l  = "Hippocampus (L)",
+  r_claustrum_sc_hip_r  = "Hippocampus (R)"
+)
+```
+
+## Load data
+
+```{r}
+dat_dHCP <- read_delim(
+  here("data", "dHCP_CP_cog_ses.csv"),
+  delim = ",",
+  trim_ws = TRUE,
+  locale = locale(decimal_mark = "."),
+  na = c(""," ","NA", "NaN", "n/a", ".", "-9999","999"),
+  col_types = cols(
+    Subject_ID = col_character(),
+    Session_ID = col_character()
+  ),
+  guess_max = 10000
+) |> janitor::clean_names()
+
+# --- recode and name important factors ---
+# group as factor
+dat_dHCP <- dat_dHCP %>%
+  mutate(
+    group = factor(case_when(
+      group == "term" ~ "FT",
+      group == "pre" ~ "PT",
+      TRUE ~ NA_character_
+    ), levels = c("FT", "PT")),
+  )
+
+# sex as factor
+dat_dHCP <- dat_dHCP %>%
+  mutate(
+    sex = factor(sex, levels = c("Female", "Male"))
+  )
+```
+
+# Outlier analysis dHCP
+
+```{r}
+long_cp_dHCP <- dat_dHCP %>%
+  dplyr::select(subject_id, group, sex, scan_age, starts_with("l_"), starts_with("r_")) %>%
+  pivot_longer(
+    cols = c(starts_with("l_"), starts_with("r_")),
+    names_to = "roi_code",
+    values_to = "connectivity"
+  ) %>%
+  rename(subject = subject_id) %>%
+  mutate(
+    roi = factor(roi_code, levels = names(roi_labels), labels = roi_labels)
+  )
+```
+
+### Overview of number of outliers per variable and values
+
+Using **IQR criterion** for defining outliers as all observations **above q0.75+1.5\*IQR or below q0.25-1.5\*IQR** (where IQR is the difference between the third and first quartile)
+
+##### for CP (main)
+
+```{r}
+stopifnot(all(c("subject","roi_code","roi","connectivity") %in% names(long_cp_dHCP)))
+
+long_cp_outliers_dHCP <- long_cp_dHCP %>%
+  dplyr::select(subject, roi_code, roi, value = connectivity)
+
+# --- make per-ROI overview of stats ---
+cp_stats <- long_cp_outliers_dHCP %>%
+  dplyr::group_by(roi_code, roi) %>%
+  dplyr::summarise(
+    q1     = stats::quantile(value, 0.25, na.rm = TRUE),
+    q3     = stats::quantile(value, 0.75, na.rm = TRUE),
+    iqr    = q3 - q1,
+    lower  = q1 - 1.5 * iqr,
+    upper  = q3 + 1.5 * iqr,
+    mean   = mean(value, na.rm = TRUE),
+    median = median(value, na.rm = TRUE),
+    n      = dplyr::n(),
+    .groups = "drop"
+  )
+
+# --- make detailed outliers table ---
+outlier_table_dHCP <- long_cp_outliers_dHCP %>%
+  dplyr::left_join(cp_stats, by = c("roi_code", "roi")) %>%
+  dplyr::filter(!is.na(value) & ((value < lower) | (value > upper))) %>%
+  dplyr::group_by(roi_code, roi) %>%
+  dplyr::mutate(n_outliers = dplyr::n()) %>%
+  dplyr::ungroup() %>%
+  dplyr::arrange(roi, subject) %>%
+  dplyr::mutate(dplyr::across(c(value, mean, median, lower, upper), ~ round(.x, 4)))
+
+# --- make compact summary per ROI as overview ---
+
+roi_totals <- long_cp_dHCP %>%
+  group_by(roi) %>%
+  summarise(total_n = sum(!is.na(connectivity)), .groups = "drop")
+
+outlier_summary_dHCP <- outlier_table_dHCP %>%
+  dplyr::group_by(roi_code, roi) %>%
+  dplyr::summarise(
+    n_outliers = dplyr::n(),
+    subjects   = paste(subject, collapse = ", "),
+    values     = paste(value, collapse = ", "),
+    lower      = dplyr::first(lower),
+    upper      = dplyr::first(upper),
+    mean       = dplyr::first(mean),
+    median     = dplyr::first(median),
+    .groups    = "drop"
+  ) %>%
+  dplyr::arrange(dplyr::desc(n_outliers))
+
+outlier_summary_dHCP <- outlier_summary_dHCP %>%
+  left_join(roi_totals, by = "roi") %>%
+  mutate(
+    perc_out = 100 * n_outliers / total_n,
+    label_text = paste0(n_outliers, " (", round(perc_out, 1), "%)")
+  )
+```
+
+#### Figure S5: number of outliers per ROI
+
+```{r}
+p_cp_outlier_counts_dHCP <- ggplot(outlier_summary_dHCP, aes(x = reorder(roi, n_outliers), y = n_outliers, fill = n_outliers)) +
+  geom_col() +
+  geom_text(aes(label = label_text), 
+            hjust = -0.2, size = 3.5) +
+  scale_fill_viridis_c(option = "rocket", direction = -1) +
+  coord_flip() +
+  theme_classic(base_size = 12) +
+  labs(
+    x = "ROI",
+    y = "Number of outliers (IQR rule)",
+    title = "Outlier counts per ROI (CP) for dHCP cohort",
+    fill = "N outliers"
+  ) +
+  expand_limits(y = max(outlier_summary_dHCP$n_outliers) * 1.15)
+
+save_plot_png(p_cp_outlier_counts_dHCP,"dHCP_outlier_counts_per_ROI")
+```
+
+### Creating dataset with outliers excluded
+
+```{r}
+dat_dHCP_excl <- dat_dHCP
+
+for (i in seq_len(nrow(cp_stats))) {
+  roi_var <- cp_stats$roi_code[i]
+  lower   <- cp_stats$lower[i]
+  upper   <- cp_stats$upper[i]
+  
+  dat_dHCP_excl[[roi_var]] <- ifelse(
+    dat_dHCP_excl[[roi_var]] < lower | dat_dHCP_excl[[roi_var]] > upper,
+    NA,   # replace outlier with NA
+    dat_dHCP_excl[[roi_var]]
+  )
+}
+```
+
+# Group Comparison
+
+### Specific setup
+
+```{r}
+options(contrasts = c("contr.sum", "contr.poly"))
+stopifnot(is.factor(dat_dHCP$group), is.factor(dat_dHCP$sex))
+```
+
+## ANCOVA helper function
+
+```{r}
+cp_vars_dHCP <- grep("^l_|^r_", names(dat_dHCP), value = TRUE)
+
+run_ancova <- function(dv, data){
+  fml <- as.formula(paste(dv, "~ group + scan_age + sex"))
+  df  <- data[, all.vars(fml)] %>% na.omit()
+  if (nrow(df) < 20) return(NULL)
+
+  fit <- lm(fml, data = df)
+
+  a3  <- car::Anova(fit, type = 3)
+
+  a3_df <- as.data.frame(a3)
+  a3_df$Term <- rownames(a3_df)
+
+  ss_group <- a3_df$`Sum Sq`[a3_df$Term == "group"]
+  df_group <- a3_df$Df[a3_df$Term == "group"]
+  Fval     <- a3_df$`F value`[a3_df$Term == "group"]
+  pval     <- a3_df$`Pr(>F)`[a3_df$Term == "group"]
+
+  ss_res   <- a3_df$`Sum Sq`[a3_df$Term == "Residuals"]
+  df_res   <- a3_df$Df[a3_df$Term == "Residuals"]
+
+  # Partial eta^2
+  partial_eta2 <- as.numeric(ss_group / (ss_group + ss_res))
+
+  # Estimated marginal means and contrast (FT - PT)
+  emm   <- emmeans::emmeans(fit, ~ group)
+  comp  <- emmeans::contrast(emm, method = "pairwise") %>% summary(infer = TRUE)
+
+  emm_tbl <- as.data.frame(emm)
+  mean_FT <- emm_tbl$emmean[emm_tbl$group == "FT"]
+  mean_PT <- emm_tbl$emmean[emm_tbl$group == "PT"]
+  diff_FT_PT <- comp$estimate[1]  # FT - PT
+
+  dir_lab <- if (pval < 0.05) {
+    if (diff_FT_PT > 0) "FT > PT" else "PT > FT"
+  } else {
+    if (diff_FT_PT > 0) "NS (FT > PT)" else "NS (PT > FT)"
+  }
+
+  tibble(
+    dv            = dv,
+    ROI           = dplyr::recode(dv, !!!roi_labels, .default = dv),
+    N             = nrow(df),
+    F             = as.numeric(Fval),
+    df1           = as.numeric(df_group),
+    df2           = as.numeric(df_res),
+    p             = as.numeric(pval),
+    partial_eta2  = partial_eta2,
+    emmean_FT     = as.numeric(mean_FT),
+    emmean_PT     = as.numeric(mean_PT),
+    diff_FT_minus_PT = as.numeric(diff_FT_PT),
+    Direction     = dir_lab
+  )
+}
+```
+
+## Run ANCOVA on full cohort
+
+```{r}
+res_group_dHCP <- map_dfr(cp_vars_dHCP, run_ancova, data = dat_dHCP)
+
+res_group_dHCP <- res_group_dHCP %>%
+  mutate(
+    p_FDR = p.adjust(p, method = "fdr"),
+    F_string = sprintf(
+      "F(1, %d) = %.2f, p = %s%s",
+      df2,
+      F,
+      ifelse(p < .001, "< 0.001",
+             sprintf("%.3f", p)),
+      ifelse(p_FDR < .001, "***",
+             ifelse(p_FDR < .01, "**",
+                    ifelse(p_FDR < .05, "*", "")))
+    )
+  ) %>%
+  arrange(p, p_FDR)
+
+#Save CSV
+outfile <- file.path(tab_dir, paste0("dHCP_GroupComparison_CP_FTvsPT_TypeIII_", format(Sys.Date()), ".csv"))
+readr::write_csv2(res_group_dHCP, outfile)
+message("Saved: ", outfile)
+```
+
+## Run ANCOVA w/o outliers
+
+Single outlier observations removed per ROI (pairwise removal).
+
+```{r}
+res_group_dHCP_excl <- map_dfr(cp_vars_dHCP, run_ancova, data = dat_dHCP_excl) %>%
+  mutate(F_string = sprintf("F(1, %d) = %.2f, p = %s",
+                            df2, F,
+                            ifelse(p < .001, "< 0.001**",
+                                   ifelse(p < .01, sprintf("%.3f*", p),
+                                          sprintf("%.3f", p)))))
+
+res_group_dHCP_excl <- res_group_dHCP_excl %>%
+  mutate(p_FDR = p.adjust(p, method = "fdr")) %>%
+  arrange(p, p_FDR)
+
+# Save CSV
+outfile <- file.path(tab_dir, paste0("dHCP_GroupComparison_CP_FTvsPT_TypeIII_excl", format(Sys.Date()), ".csv"))
+readr::write_csv2(res_group_dHCP_excl, outfile)
+message("Saved: ", outfile)
+```
+
+# CP Descriptives
+
+```{r}
+stopifnot(!anyNA(long_cp_dHCP$roi))
+
+classify_type <- function(roi_code) {
+  out <- dplyr::case_when(
+    grepl("_claustrum_(c|sc)_", roi_code) ~ "Limbic",
+    grepl("_claustrum_ac_",     roi_code) ~ "Associative",
+    grepl("_claustrum_pc_",     roi_code) ~ "Primary",
+    TRUE ~ NA_character_
+  )
+  stopifnot(!anyNA(out))
+  out
+}
+
+# row order
+roi_region_order <- c("ac_occ","ac_par","ac_pfc","ac_temp",
+                      "pc_aud","pc_mot","pc_sens","pc_vis",
+                      "c_ant","c_pos","sc_hip")
+
+summarize_roi_t <- function(long_df) {
+  rois <- long_df %>%
+    dplyr::select(group, roi_code, roi, connectivity) %>%
+    dplyr::filter(!is.na(group), !is.na(connectivity)) %>%
+    dplyr::mutate(Type = classify_type(roi_code)) %>%
+    dplyr::group_by(roi_code, roi, Type) %>%
+    tidyr::nest() %>%
+    dplyr::ungroup()
+  
+  purrr::map_dfr(seq_len(nrow(rois)), function(i) {
+    df  <- rois$data[[i]]
+    rc  <- rois$roi_code[i]
+    rnm <- as.character(rois$roi[i])
+    typ <- rois$Type[i]
+    
+    x <- df %>% dplyr::filter(group == "FT") %>% dplyr::pull(connectivity)
+    y <- df %>% dplyr::filter(group == "PT") %>% dplyr::pull(connectivity)
+    if (length(x) < 2 || length(y) < 2) return(NULL)
+    
+    var_p     <- tryCatch(var.test(x, y)$p.value, error = function(e) NA_real_)
+    use_welch <- is.finite(var_p) && var_p < 0.05
+    
+    tt    <- t.test(x, y, var.equal = !use_welch)     # t = FT - PT
+    tt_t  <- unname(tt$statistic)
+    tt_df <- unname(tt$parameter)
+    tt_p  <- unname(tt$p.value)
+    
+    tibble(
+      Type = typ, ROI = rnm, roi_code = rc,
+      n_FT = length(x),
+      mean_sd_FT = sprintf("%.3f±%.3f", mean(x), sd(x)),
+      min_FT = sprintf("%.3f", min(x)), max_FT = sprintf("%.3f", max(x)),
+      range_FT = sprintf("%.3f", max(x) - min(x)),
+      n_PT = length(y),
+      mean_sd_PT = sprintf("%.3f±%.3f", mean(y), sd(y)),
+      min_PT = sprintf("%.3f", min(y)), max_PT = sprintf("%.3f", max(y)),
+      range_PT = sprintf("%.3f", max(y) - min(y)),
+      `t(df)` = sprintf("%.3f(%s)%s", tt_t,
+                        ifelse(use_welch, sprintf("%.2f", tt_df), as.integer(round(tt_df))),
+                        ifelse(use_welch, "*", "")),
+      p = ifelse(tt_p < .001, "<.001", sprintf("%.3f", tt_p)),
+      mean_FT_num = mean(x), median_FT_num = median(x), t_num = tt_t
+    )
+  }) %>%
+    dplyr::mutate(region = sub("^[lr]_claustrum_(.*)_[lr]$", "\\1", roi_code),
+                  hemi   = substr(roi_code, 1, 1)) %>%
+    dplyr::arrange(factor(Type, levels = c("Associative","Primary","Limbic")),
+                   factor(region, levels = roi_region_order),
+                   dplyr::desc(hemi)) %>%
+    dplyr::select(-region, -hemi)
+}
+
+cp_table <- summarize_roi_t(long_cp_dHCP)
+
+readr::write_excel_csv2(cp_table, file.path(tab_dir, paste0("dHCP_CP_ROI_summary_", Sys.Date(), ".csv")))
+```

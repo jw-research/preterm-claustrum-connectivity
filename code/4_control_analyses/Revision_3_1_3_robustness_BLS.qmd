@@ -1,0 +1,461 @@
+---
+title: "Claustrum Connectivity in Prematurity Residual Diagnostics and Robust Inference (BLS)"
+author: "Jil Wendt"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+Residual diagnostics and robust inference for all reported models in the adult cohort (BLS; Supplementary control and robustness analyses, section 3): group comparison (CP \~ group + age at scan + sex) and GLMs in preterm-born adults (early social environment, degree of prematurity, cognition at 8 years, adult cognition). Diagnostics per model: residual skewness and kurtosis, Shapiro-Wilk, Breusch-Pagan, Cook's distance; Q-Q and scale-location plots for the group comparison. All tests are repeated with HC3 standard errors and Freedman-Lane permutation tests (5,000 permutations), with FDR correction within the same families as in the main analyses.
+
+- Input: `data/adults_harmonized.csv`
+- Outputs (`outputs/tables`):
+  - `Revision_FDR_families_BLS_<date>.csv`: tests per FDR family (results/fdr_families_BLS.csv)
+  - `Revision_diagnostics_CP_BLS_<date>.csv`: distribution of CP per ROI (results/diagnostics_CP_distribution_BLS.csv)
+  - `Revision_residdiag_groupcomp_BLS_<date>.csv`, `Revision_residdiag_GLMs_BLS_<date>.csv`: residual diagnostics (results/diagnostics_residuals_groupcomp_BLS.csv, diagnostics_residuals_GLMs_BLS.csv)
+  - `Revision_robustness_BLS_<date>.csv`: parametric, HC3 and permutation P-values (results/robustness_HC3_permutation_BLS.csv)
+- Figures (`outputs/figures`): Q-Q and scale-location plots, `Revision313_BLS_*.png`
+
+# 1 Setup
+
+## General setup
+
+```{r}
+#| label: setup
+#| include: false
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(tibble)
+library(readr)
+library(here)
+library(e1071)
+library(lmtest)
+library(sandwich)
+library(permuco)
+
+fig_dir <- here::here("outputs", "figures")
+tab_dir <- here::here("outputs", "tables")
+```
+
+#### Lookup Tables for Variable Names
+
+```{r}
+roi_labels <- c(
+  cp_ac_occ_l_ipsi  = "Occipital Associative (L)",
+  cp_ac_occ_r_ipsi  = "Occipital Associative (R)",
+  cp_ac_par_l_ipsi  = "Parietal Associative (L)",
+  cp_ac_par_r_ipsi  = "Parietal Associative (R)",
+  cp_ac_pfc_l_ipsi  = "Prefrontal Associative (L)",
+  cp_ac_pfc_r_ipsi  = "Prefrontal Associative (R)",
+  cp_ac_temp_l_ipsi = "Temporal Associative (L)",
+  cp_ac_temp_r_ipsi = "Temporal Associative (R)",
+  cp_c_pos_l_ipsi   = "Posterior Cingulate (L)",
+  cp_c_pos_r_ipsi   = "Posterior Cingulate (R)",
+  cp_c_ant_l_ipsi   = "Anterior Cingulate (L)",
+  cp_c_ant_r_ipsi   = "Anterior Cingulate (R)",
+  cp_pc_aud_l_ipsi  = "Primary Auditory (L)",
+  cp_pc_aud_r_ipsi  = "Primary Auditory (R)",
+  cp_pc_mot_l_ipsi  = "Primary Motor (L)",
+  cp_pc_mot_r_ipsi  = "Primary Motor (R)",
+  cp_pc_sens_l_ipsi = "Primary Somatosensory (L)",
+  cp_pc_sens_r_ipsi = "Primary Somatosensory (R)",
+  cp_pc_vis_l_ipsi  = "Primary Visual (L)",
+  cp_pc_vis_r_ipsi  = "Primary Visual (R)",
+  cp_sc_hip_l_ipsi  = "Hippocampus (L)",
+  cp_ac_hip_r_ipsi  = "Hippocampus (R)"
+)
+
+sig_roi_codes <- c(
+  "cp_ac_occ_r_ipsi",
+  "cp_ac_occ_l_ipsi",
+  "cp_ac_par_l_ipsi",
+  "cp_ac_pfc_l_ipsi",
+  "cp_ac_temp_l_ipsi",
+  "cp_pc_mot_r_ipsi",
+  "cp_pc_vis_r_ipsi",
+  "cp_c_pos_r_ipsi"
+)
+```
+
+## Specific setup
+
+```{r}
+options(contrasts = c("contr.treatment", "contr.poly"))
+
+# covariates in every model
+covars    <- c("age_at_scan", "sex")
+covar_rhs <- paste(covars, collapse = " + ")
+
+# early social environment (full model)
+terms_A1 <- c("ses0y2_facMiddle", "ses0y2_facLower", "psi1", "betreu", "optws")
+
+# degree of prematurity
+prematurity_vars <- c("tz", "gew", "inti")
+
+# cognition at 8 years
+cog8y_vars <- c("sif8", "stsed8", "stsgd8")
+
+# adult cognition
+cog_all <- c("wie_gesiq", "ant_alerting", "ant_orienting", "ant_congruency")
+
+# descriptive threshold for "near zero" CP (fewer than 1 in 1000 seeded streamlines reaching the target) for table
+NEAR_ZERO <- 0.001
+
+# number of permutations
+NPERM <- 5000
+```
+
+## Load data
+
+```{r}
+dat <- read_delim(
+  here("data", "adults_harmonized.csv"),
+  delim = ";",
+  trim_ws = TRUE,
+  locale = locale(decimal_mark = ","),
+  na = c(""," ","NA", "NaN", "n/a", ".", "-9999","999"),
+  col_types = cols(
+    Subject = col_character(),
+    ID      = col_character()
+  ),
+  guess_max = 10000
+) |> janitor::clean_names()
+
+# --- recode and name important factors ---
+dat <- dat %>%
+  mutate(
+    group = factor(case_when(
+      groupcode == 0 ~ "FT",
+      groupcode == 1 ~ "PT",
+      TRUE ~ NA_character_
+    ), levels = c("FT", "PT")),
+
+    sex = factor(case_when(
+      sex == 1 ~ "Male",
+      sex == 2 ~ "Female",
+      TRUE ~ NA_character_
+    ), levels = c("Female", "Male"))
+  )
+```
+
+### Make data subsets
+
+```{r}
+cp_vars <- grep("^cp_", names(dat), value = TRUE)
+
+num_vars <- c(cp_vars, "age_at_scan", "psi1", "betreu", "optws",
+              prematurity_vars, cog8y_vars, cog_all)
+
+final_dat_CP <- dat |>
+  mutate(
+    across(all_of(num_vars), as.numeric),
+    ses0y2_fac = factor(ses0y2, levels = c(1, 2, 3),
+                        labels = c("Upper", "Middle", "Lower"))
+  )
+
+dat_PT <- final_dat_CP |> filter(group == "PT")
+
+dat_PT_cog <- dat_PT |>
+  mutate(across(all_of(cp_vars), ~ as.numeric(scale(.x))))
+```
+
+### Checks
+
+```{r}
+stopifnot(length(cp_vars) == 22)
+stopifnot(all(cp_vars %in% names(roi_labels)))
+stopifnot(all(sig_roi_codes %in% cp_vars))
+
+stopifnot(all(num_vars %in% names(final_dat_CP)))
+stopifnot(all(sapply(final_dat_CP[num_vars], is.numeric)))
+```
+
+### Overview of reported models
+
+```{r}
+models_BLS <- bind_rows(
+  # Group comparison: CP ~ group + age + sex (full cohort)
+  tibble(
+    analysis = "GC group comparison",
+    family   = "GC: group",
+    dv       = cp_vars,
+    rhs      = paste("group +", covar_rhs),
+    data     = "final_dat_CP",
+    term     = "groupPT",
+    roi      = cp_vars
+  ),
+  # Analysis 1: CP ~ SES(factor) + PSI + PIRI + optws + age + sex (PT only)
+  crossing(dv = cp_vars, term = terms_A1) |>
+    mutate(
+      analysis = "A1 early social environment",
+      family   = paste("A1:", term),
+      rhs      = paste("ses0y2_fac + psi1 + betreu + optws +", covar_rhs),
+      data     = "dat_PT",
+      roi      = dv
+    ),
+  # Analysis 2: CP ~ prematurity variable + age + sex (PT only)
+  crossing(dv = cp_vars, term = prematurity_vars) |>
+    mutate(
+      analysis = "A2  prematurity",
+      family   = paste("A2:", term),
+      rhs      = paste(term, "+", covar_rhs),
+      data     = "dat_PT",
+      roi      = dv
+    ),
+  # Analysis 3: CP ~ cognition at 8y + age + sex (PT only)
+  crossing(dv = cp_vars, term = cog8y_vars) |>
+    mutate(
+      analysis = "A3 cognition 8y",
+      family   = paste("A3:", term),
+      rhs      = paste(term, "+", covar_rhs),
+      data     = "dat_PT",
+      roi      = dv
+    ),
+  # Analysis 4: adult cognition ~ CP (z) + age + sex (PT only)
+  crossing(dv = cog_all, term = cp_vars) |>
+    mutate(
+      analysis = "A4 adult cognition",
+      family   = paste("A4:", dv),
+      rhs      = paste(term, "+", covar_rhs),
+      data     = "dat_PT_cog",
+      roi      = term
+    )
+) |>
+  mutate(
+    ROI   = recode(roi, !!!roi_labels),
+    model = paste(dv, "~", rhs)
+  ) |>
+  dplyr::select(analysis, family, ROI, roi, dv, rhs, data, term, model)
+
+# FDR families: number of tests per family
+fdr_families_BLS <- models_BLS |> count(analysis, family, name = "n_tests")
+
+readr::write_csv2(fdr_families_BLS,
+                  file.path(tab_dir, paste0("Revision_FDR_families_BLS_", Sys.Date(), ".csv")))
+```
+
+# 2 Diagnostics
+
+## Helper functions
+
+### Skewness/Kurtosis
+
+```{r}
+skew    <- function(x) e1071::skewness(x, na.rm = TRUE, type = 2)
+ex_kurt <- function(x) e1071::kurtosis(x, na.rm = TRUE, type = 2)
+```
+
+### Residual diagnostics
+
+```{r}
+resid_diag <- function(fml, data) {
+  d <- model.frame(fml, data = data, na.action = na.omit)
+  
+  fit    <- lm(fml, data = d)
+  r      <- residuals(fit)
+  cooksd <- cooks.distance(fit)
+  sw     <- stats::shapiro.test(r)
+  
+  tibble(
+    n             = nobs(fit),
+    df_resid      = df.residual(fit),
+    skew_resid    = skew(r),
+    kurt_resid    = ex_kurt(r),
+    shapiro_W     = unname(sw$statistic),
+    shapiro_p     = sw$p.value,
+    bp_p          = lmtest::bptest(fit)$p.value,
+    max_cooksd    = max(cooksd),
+    n_cooksd_high = sum(cooksd > 4 / nobs(fit))
+  )
+}
+```
+
+## 2.1 Distribution of raw CP per ROI
+
+```{r}
+cp_dist_BLS <- map_dfr(cp_vars, function(v) {
+  x <- final_dat_CP[[v]]
+  x <- x[!is.na(x)]
+  tibble(
+    dv            = v,
+    ROI           = recode(v, !!!roi_labels),
+    n             = length(x),
+    mean          = mean(x),
+    sd            = sd(x),
+    min           = min(x),
+    max           = max(x),
+    n_zero        = sum(x == 0),
+    pct_zero      = 100 * mean(x == 0),
+    pct_near_zero = 100 * mean(x < NEAR_ZERO),
+    skew          = skew(x),
+    kurtosis      = ex_kurt(x),
+    floor_in_sd   = mean(x) / sd(x)
+  )
+}) |> arrange(floor_in_sd)
+
+readr::write_csv2(cp_dist_BLS,
+                  file.path(tab_dir, paste0("Revision_diagnostics_CP_BLS_", Sys.Date(), ".csv")))
+```
+
+## 2.2 Residual diagnostics on all reported models
+
+```{r}
+models_unique_BLS <- models_BLS |> distinct(analysis, ROI, dv, rhs, data, model)
+
+diag_BLS <- pmap_dfr(models_unique_BLS, function(analysis, ROI, dv, rhs, data, model) {
+  out <- resid_diag(as.formula(model), get(data))
+  mutate(out, analysis = analysis, ROI = ROI, model = model, .before = 1)
+}) |>
+  mutate(
+    flag = case_when(
+      abs(skew_resid) > 1 | bp_p < 0.05 ~ "assumptions questionable",
+      abs(skew_resid) > 0.5             ~ "mild departure",
+      TRUE                              ~ "ok"
+    )
+  )
+
+diag_group_BLS <- diag_BLS |>
+  filter(analysis == "GC group comparison") |>
+  arrange(desc(abs(skew_resid)))
+
+readr::write_csv2(diag_group_BLS,
+                  file.path(tab_dir, paste0("Revision_residdiag_groupcomp_BLS_", Sys.Date(), ".csv")))
+readr::write_csv2(filter(diag_BLS, analysis != "GC group comparison"),
+                  file.path(tab_dir, paste0("Revision_residdiag_GLMs_BLS_", Sys.Date(), ".csv")))
+```
+
+## 2.3 Figures
+
+```{r}
+diag_panel_png <- function(dvs, which_plot, file, data, rhs,
+                           labels = roi_labels, ncol = 5, cex_main = 0.9) {
+  nr <- ceiling(length(dvs) / ncol)
+  png(file, width = 300 * ncol, height = 280 * nr, res = 110)
+  op <- par(mfrow = c(nr, ncol), mar = c(4, 4, 3, 1))
+  for (dv in dvs) {
+    fml <- as.formula(paste(dv, "~", rhs))
+    d   <- model.frame(fml, data = data, na.action = na.omit)
+    fit <- lm(fml, data = d)
+    plot(fit, which = which_plot,
+         main = recode(dv, !!!labels),
+         sub.caption = "", caption = "", cex.main = cex_main)
+  }
+  par(op)
+  dev.off()
+  message("Saved: ", file)
+}
+
+rhs_group <- paste("group +", covar_rhs)
+
+# --- All 22 ROIs ---
+diag_panel_png(cp_vars, which_plot = 2,
+               file = file.path(fig_dir, "Revision313_BLS_QQ_all22.png"),
+               data = final_dat_CP, rhs = rhs_group)
+
+diag_panel_png(cp_vars, which_plot = 3,
+               file = file.path(fig_dir, "Revision313_BLS_scaleloc_all22.png"),
+               data = final_dat_CP, rhs = rhs_group)
+
+# --- FDR-significant ROIs only ---
+diag_panel_png(sig_roi_codes, which_plot = 2,
+               file = file.path(fig_dir, "Revision313_BLS_QQ_sigROIs.png"),
+               data = final_dat_CP, rhs = rhs_group, ncol = 4)
+
+diag_panel_png(sig_roi_codes, which_plot = 3,
+               file = file.path(fig_dir, "Revision313_BLS_scaleloc_sigROIs.png"),
+               data = final_dat_CP, rhs = rhs_group, ncol = 4)
+```
+
+# 3 Robust/permutation-based inference
+
+- p_param = p-value from original run, as reported
+
+- p_hc3 = p-value from heteroscedasticity-consistent (HC3) standard errors - for unequal variance
+
+- p_perm = p-value from freedman-lane permutation test - for skewed, non-normal residuals
+
+- FDR applied within same families as in the main manuscript analysis and separately for each type of test
+
+## Helper function
+
+```{r}
+robust_p <- function(fml, data, terms, nperm = NPERM) {
+  d   <- model.frame(fml, data = data, na.action = na.omit)
+  fit <- lm(fml, data = d)
+  cf  <- summary(fit)$coefficients
+  
+  missing_terms <- setdiff(terms, rownames(cf))
+  if (length(missing_terms)) {
+    stop("Term(s) ", paste(missing_terms, collapse = ", "),
+         " not found in model: ", paste(deparse(fml), collapse = ""))
+  }
+  
+  # HC3 robust standard errors
+  hc3 <- lmtest::coeftest(fit, vcov. = sandwich::vcovHC(fit, type = "HC3"))
+  
+  # Freedman-Lane permutation
+  perm     <- permuco::lmperm(fml, data = d, np = nperm, method = "freedman_lane")
+  perm_tab <- as.data.frame(perm$table)
+  if (!"resampled Pr(>|t|)" %in% names(perm_tab)) {
+    stop("Column 'resampled Pr(>|t|)' not found in lmperm() output; see check in 5.1")
+  }
+  if (!all(terms %in% rownames(perm_tab))) {
+    stop("Term name(s) differ between lm() and lmperm() output; see check in 5.1")
+  }
+  
+  tibble(
+    term      = terms,
+    n         = nobs(fit),
+    df_resid  = df.residual(fit),
+    estimate  = cf[terms, "Estimate"],
+    std_error = cf[terms, "Std. Error"],
+    t_value   = cf[terms, "t value"],
+    p_param   = cf[terms, "Pr(>|t|)"],
+    p_hc3     = hc3[terms, "Pr(>|t|)"],
+    p_perm    = perm_tab[terms, "resampled Pr(>|t|)"]
+  )
+}
+```
+
+## Run all tests
+
+```{r}
+set.seed(42)
+
+model_keys <- models_BLS |> dplyr::distinct(model, data)
+
+rob_BLS <- purrr::map2_dfr(model_keys$model, model_keys$data, function(m, dat_name) {
+  rows <- models_BLS |>
+    dplyr::filter(model == m, data == dat_name) |>
+    dplyr::select(analysis, family, ROI, dv, term)
+  out <- robust_p(as.formula(m), get(dat_name), rows$term)
+  dplyr::left_join(rows, out, by = "term")
+})
+
+stopifnot(nrow(rob_BLS) == nrow(models_BLS))
+
+rob_BLS <- rob_BLS |>
+  group_by(family) |>
+  mutate(
+    p_param_fdr = p.adjust(p_param, "fdr"),
+    p_hc3_fdr   = p.adjust(p_hc3,   "fdr"),
+    p_perm_fdr  = p.adjust(p_perm,  "fdr")
+  ) |>
+  ungroup() |>
+  mutate(
+    sig_param = p_param_fdr < 0.05,
+    sig_hc3   = p_hc3_fdr   < 0.05,
+    sig_perm  = p_perm_fdr  < 0.05,
+    agree     = (sig_param == sig_hc3) & (sig_param == sig_perm)
+  )
+```
+
+## Save results
+
+```{r}
+readr::write_csv2(rob_BLS,
+                  file.path(tab_dir, paste0("Revision_robustness_BLS_", Sys.Date(), ".csv")))
+```

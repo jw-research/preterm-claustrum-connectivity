@@ -1,0 +1,4 @@
+Variable,n_FT,med_iqr_FT,min_FT,max_FT,range_FT,n_PT,med_iqr_PT,min_PT,max_PT,range_PT,U,p
+Duration in hospital (at birth),81,6.00 (3.00),2,26,24,65,66.00 (39.00),24,141,117,1,<.001
+"Parent-infant relationship index (PIRI, neonatal/5 months",81,0.00 (1.00),0,3,3,63,1.00 (1.00),0,4,4,1868,0.001
+"Psychosocial Stress Index, neonatal/5months (combined)",81,0.00 (0.00),0,3,3,61,0.00 (1.00),0,7,7,2041,0.028

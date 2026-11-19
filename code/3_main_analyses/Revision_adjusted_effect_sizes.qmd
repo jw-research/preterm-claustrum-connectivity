@@ -1,0 +1,262 @@
+---
+title: "Claustrum Connectivity in Prematurity Covariate-Adjusted Effect Sizes (Table S13, Figure 3)"
+author: "Jil Wendt"
+format: html
+editor: visual
+editor_options:
+  chunk_output_type: console
+---
+
+Covariate-adjusted Cohen's d for the group differences (FT - PT) in CP and CD per target ROI, in both cohorts. d = ANCOVA-adjusted mean difference (group + age at scan + sex) divided by the pooled within-group SD, with 95% CI; unadjusted d is computed for comparison. FDR correction across the 22 target ROIs per cohort and metric.
+
+- Input: `data/adults_harmonized.csv`, `data/dHCP_CP_cog_ses.csv`, `data/dHCP_CD_cog_ses.csv`, `data/effect_size_trajectory_mod.csv` (ROI order and labels for Figure 3)
+- Outputs:
+  - `outputs/tables/Revision_TableS13_adjusted_d_<date>.csv`: Table S13 (results/effect_sizes_adjusted_d.csv)
+  - `data/effect_size_trajectory_CP_ADJ_<date>.csv`, `data/effect_size_trajectory_CD_ADJ_<date>.csv`: adjusted d per ROI, input for `Revision_3_1_1_metric_agreement.qmd`
+  - `data/Figure3_input_adjusted_d.csv`: input for Figure 3 (`trajectory.qmd`)
+
+## 1 Setup
+
+```{r}
+#| label: setup
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(readr)
+library(car)
+library(emmeans)
+library(here)
+
+options(contrasts = c("contr.sum", "contr.poly"))
+
+tab_dir  <- here::here("outputs", "tables")
+data_dir <- here::here("data")
+
+cov_bls  <- c("age_at_scan", "sex")
+cov_dhcp <- c("scan_age", "sex")
+```
+
+### Lookup tables
+
+```{r}
+roi_labels <- c(
+  cp_ac_occ_l_ipsi  = "Occipital Associative (L)",
+  cp_ac_occ_r_ipsi  = "Occipital Associative (R)",
+  cp_ac_par_l_ipsi  = "Parietal Associative (L)",
+  cp_ac_par_r_ipsi  = "Parietal Associative (R)",
+  cp_ac_pfc_l_ipsi  = "Prefrontal Associative (L)",
+  cp_ac_pfc_r_ipsi  = "Prefrontal Associative (R)",
+  cp_ac_temp_l_ipsi = "Temporal Associative (L)",
+  cp_ac_temp_r_ipsi = "Temporal Associative (R)",
+  cp_c_pos_l_ipsi   = "Posterior Cingulate (L)",
+  cp_c_pos_r_ipsi   = "Posterior Cingulate (R)",
+  cp_c_ant_l_ipsi   = "Anterior Cingulate (L)",
+  cp_c_ant_r_ipsi   = "Anterior Cingulate (R)",
+  cp_pc_aud_l_ipsi  = "Primary Auditory (L)",
+  cp_pc_aud_r_ipsi  = "Primary Auditory (R)",
+  cp_pc_mot_l_ipsi  = "Primary Motor (L)",
+  cp_pc_mot_r_ipsi  = "Primary Motor (R)",
+  cp_pc_sens_l_ipsi = "Primary Somatosensory (L)",
+  cp_pc_sens_r_ipsi = "Primary Somatosensory (R)",
+  cp_pc_vis_l_ipsi  = "Primary Visual (L)",
+  cp_pc_vis_r_ipsi  = "Primary Visual (R)",
+  cp_sc_hip_l_ipsi  = "Hippocampus (L)",
+  cp_ac_hip_r_ipsi  = "Hippocampus (R)"
+)
+roi_labels_CD <- setNames(unname(roi_labels), sub("^cp_", "cd_", names(roi_labels)))
+
+roi_labels_dHCP <- c(
+  l_claustrum_ac_occ_l  = "Occipital Associative (L)",
+  r_claustrum_ac_occ_r  = "Occipital Associative (R)",
+  l_claustrum_ac_par_l  = "Parietal Associative (L)",
+  r_claustrum_ac_par_r  = "Parietal Associative (R)",
+  l_claustrum_ac_pfc_l  = "Prefrontal Associative (L)",
+  r_claustrum_ac_pfc_r  = "Prefrontal Associative (R)",
+  l_claustrum_ac_temp_l = "Temporal Associative (L)",
+  r_claustrum_ac_temp_r = "Temporal Associative (R)",
+  l_claustrum_c_pos_l   = "Posterior Cingulate (L)",
+  r_claustrum_c_pos_r   = "Posterior Cingulate (R)",
+  l_claustrum_c_ant_l   = "Anterior Cingulate (L)",
+  r_claustrum_c_ant_r   = "Anterior Cingulate (R)",
+  l_claustrum_pc_aud_l  = "Primary Auditory (L)",
+  r_claustrum_pc_aud_r  = "Primary Auditory (R)",
+  l_claustrum_pc_mot_l  = "Primary Motor (L)",
+  r_claustrum_pc_mot_r  = "Primary Motor (R)",
+  l_claustrum_pc_sens_l = "Primary Somatosensory (L)",
+  r_claustrum_pc_sens_r = "Primary Somatosensory (R)",
+  l_claustrum_pc_vis_l  = "Primary Visual (L)",
+  r_claustrum_pc_vis_r  = "Primary Visual (R)",
+  l_claustrum_sc_hip_l  = "Hippocampus (L)",
+  r_claustrum_sc_hip_r  = "Hippocampus (R)"
+)
+```
+
+### Load data
+
+```{r}
+# --- BLS (harmonized) ---
+dat <- read_delim(
+  file.path(data_dir, "adults_harmonized.csv"),
+  delim = ";", trim_ws = TRUE,
+  locale = locale(decimal_mark = ","),
+  na = c(""," ","NA", "NaN", "n/a", ".", "-9999","999"),
+  col_types = cols(Subject = col_character(), ID = col_character()),
+  guess_max = 10000
+) |> janitor::clean_names() |>
+  mutate(
+    group = factor(case_when(groupcode == 0 ~ "FT", groupcode == 1 ~ "PT"),
+                   levels = c("FT", "PT")),
+    sex   = factor(case_when(sex == 1 ~ "Male", sex == 2 ~ "Female"),
+                   levels = c("Female", "Male"))
+  )
+
+# --- dHCP ---
+load_dHCP <- function(file) {
+  readr::read_csv(file.path(data_dir, file), na = c("", "NA", "NaN"),
+                  show_col_types = FALSE) |>
+    janitor::clean_names() |>
+    mutate(
+      group = factor(dplyr::recode(group, term = "FT", pre = "PT"), levels = c("FT", "PT")),
+      sex   = factor(sex, levels = c("Female", "Male"))
+    )
+}
+dat_dHCP_cp <- load_dHCP("dHCP_CP_cog_ses.csv")
+dat_dHCP_cd <- load_dHCP("dHCP_CD_cog_ses.csv")
+
+# --- checks ---
+cp_vars_bls   <- names(roi_labels)
+cd_vars_bls   <- names(roi_labels_CD)
+roi_cols_dHCP <- names(roi_labels_dHCP)
+
+stopifnot(
+  all(c(cp_vars_bls, cd_vars_bls, cov_bls) %in% names(dat)),
+  all(c(roi_cols_dHCP, cov_dhcp) %in% names(dat_dHCP_cp)),
+  all(c(roi_cols_dHCP, cov_dhcp) %in% names(dat_dHCP_cd)),
+  !anyNA(dat$group), !anyNA(dat_dHCP_cp$group)
+)
+```
+
+## 2 Effect size functions
+
+```{r}
+d_one <- function(data, dv, covars) {
+  fml <- reformulate(c("group", covars), response = dv)
+  df  <- data[, c(dv, "group", covars)] |> na.omit()
+  fit <- lm(fml, data = df)
+
+  # ANCOVA group test
+  a3   <- as.data.frame(car::Anova(fit, type = 3))
+  p    <- a3[["Pr(>F)"]][rownames(a3) == "group"]
+  Fval <- a3[["F value"]][rownames(a3) == "group"]
+  df2  <- a3[["Df"]][rownames(a3) == "Residuals"]
+
+  # Adjusted mean difference FT - PT with 95% CI
+  ct <- emmeans::emmeans(fit, ~ group) |>
+    emmeans::contrast(method = "pairwise") |>
+    summary(infer = TRUE)
+  stopifnot(nrow(ct) == 1, grepl("FT - PT", ct$contrast))
+
+  # Pooled within-group SD of the outcome
+  x1 <- df[[dv]][df$group == "FT"]; x2 <- df[[dv]][df$group == "PT"]
+  n1 <- length(x1); n2 <- length(x2)
+  sp <- sqrt(((n1 - 1) * var(x1) + (n2 - 1) * var(x2)) / (n1 + n2 - 2))
+
+  # Unadjusted d
+  d_u  <- (mean(x1) - mean(x2)) / sp
+  se_u <- sqrt((n1 + n2) / (n1 * n2) + d_u^2 / (2 * (n1 + n2)))
+
+  tibble(
+    roi_code = dv, n_FT = n1, n_PT = n2,
+    d_unadj = d_u, ci_lo_unadj = d_u - 1.96 * se_u, ci_hi_unadj = d_u + 1.96 * se_u,
+    diff_adj = ct$estimate,
+    d_adj    = ct$estimate / sp,
+    ci_lo_adj = ct$lower.CL / sp,
+    ci_hi_adj = ct$upper.CL / sp,
+    F = Fval, df2 = df2, p = p
+  )
+}
+
+d_tbl <- function(data, vars, labels, covars, cohort, metric) {
+  map_dfr(vars, ~ d_one(data, .x, covars)) |>
+    mutate(ROI = unname(labels[roi_code]),
+           cohort = cohort, metric = metric,
+           p_FDR = p.adjust(p, method = "fdr"),
+           .before = 1)
+}
+```
+
+## 3 Compute
+
+```{r}
+es <- bind_rows(
+  d_tbl(dat,         cp_vars_bls,   roi_labels,      cov_bls,  "BLS",  "CP"),
+  d_tbl(dat,         cd_vars_bls,   roi_labels_CD,   cov_bls,  "BLS",  "CD"),
+  d_tbl(dat_dHCP_cp, roi_cols_dHCP, roi_labels_dHCP, cov_dhcp, "dHCP", "CP"),
+  d_tbl(dat_dHCP_cd, roi_cols_dHCP, roi_labels_dHCP, cov_dhcp, "dHCP", "CD")
+)
+stopifnot(nrow(es) == 88, !anyNA(es$ROI), !anyNA(es$d_adj))
+```
+
+## 4 Save outputs
+
+```{r}
+stamp <- format(Sys.Date())
+
+fmt_ci <- function(d, lo, hi) sprintf("%.3f [%.3f, %.3f]", d, lo, hi)
+tab_s13 <- es |>
+  filter(metric == "CP") |>
+  transmute(ROI, cohort,
+            d_adj_ci   = fmt_ci(d_adj, ci_lo_adj, ci_hi_adj),
+            d_unadj_ci = fmt_ci(d_unadj, ci_lo_unadj, ci_hi_unadj),
+            p_FDR) |>
+  pivot_wider(names_from = cohort, values_from = c(d_adj_ci, d_unadj_ci, p_FDR),
+              names_glue = "{cohort}_{.value}") |>
+  select(ROI, starts_with("dHCP_"), starts_with("BLS_"))
+
+write_csv2(tab_s13, file.path(tab_dir, paste0("Revision_TableS13_adjusted_d_", stamp, ".csv")))
+
+to_wide <- function(m) {
+  es |> filter(metric == m) |>
+    transmute(ROI, cohort, d = d_adj, ci_lo = ci_lo_adj, ci_hi = ci_hi_adj, p = p_FDR) |>
+    pivot_wider(names_from = cohort, values_from = c(d, ci_lo, ci_hi, p),
+                names_glue = "{cohort}_{.value}")
+}
+d_traj_cp_adj <- to_wide("CP")
+d_traj_cd_adj <- to_wide("CD")
+write_csv2(d_traj_cp_adj, file.path(data_dir, paste0("effect_size_trajectory_CP_ADJ_", stamp, ".csv")))
+write_csv2(d_traj_cd_adj, file.path(data_dir, paste0("effect_size_trajectory_CD_ADJ_", stamp, ".csv")))
+```
+
+## 5 Generate input file for figure 3
+
+```{r}
+roi_codes <- c(
+  "Occipital Associative (R)" = "AC_Occ_R",  "Occipital Associative (L)" = "AC_Occ_L",
+  "Parietal Associative (R)"  = "AC_Par_R",  "Parietal Associative (L)"  = "AC_Par_L",
+  "Prefrontal Associative (R)"= "AC_PFC_R",  "Prefrontal Associative (L)"= "AC_PFC_L",
+  "Temporal Associative (R)"  = "AC_Temp_R", "Temporal Associative (L)"  = "AC_Temp_L",
+  "Primary Auditory (R)"      = "PC_aud_R",  "Primary Auditory (L)"      = "PC_aud_L",
+  "Primary Motor (R)"         = "PC_mot_R",  "Primary Motor (L)"         = "PC_mot_L",
+  "Primary Somatosensory (R)" = "PC_sens_R", "Primary Somatosensory (L)" = "PC_sens_L",
+  "Primary Visual (R)"        = "PC_vis_R",  "Primary Visual (L)"        = "PC_vis_L",
+  "Anterior Cingulate (R)"    = "C_ant_R",   "Anterior Cingulate (L)"    = "C_ant_L",
+  "Posterior Cingulate (R)"   = "C_pos_R",   "Posterior Cingulate (L)"   = "C_pos_L",
+  "Hippocampus (R)"           = "Hip_R",     "Hippocampus (L)"           = "Hip_L"
+)
+layout <- read_delim(file.path(data_dir, "effect_size_trajectory_mod.csv"), delim = ";",
+                     trim_ws = TRUE, show_col_types = FALSE) |>
+  select(ROI, ROI_order, ROI_label, Type) |>
+  mutate(ROI_label = trimws(ROI_label))
+stopifnot(setequal(names(roi_codes), d_traj_cp_adj$ROI),
+          setequal(unname(roi_codes), layout$ROI))
+
+fig3 <- d_traj_cp_adj |>
+  transmute(ROI = unname(roi_codes[ROI]),
+            BLS_d,  BLS_p_FDR  = BLS_p,  BLS_ci_low  = BLS_ci_lo,  BLS_ci_high  = BLS_ci_hi,
+            dHCP_d, dHCP_p_FDR = dHCP_p, dHCP_ci_low = dHCP_ci_lo, dHCP_ci_high = dHCP_ci_hi) |>
+  right_join(layout, by = "ROI") |>
+  select(ROI, ROI_order, ROI_label, Type, starts_with("BLS_"), starts_with("dHCP_")) |>
+  arrange(desc(ROI_order))
+stopifnot(nrow(fig3) == 22, !anyNA(fig3))
+write_delim(fig3, file.path(data_dir, "Figure3_input_adjusted_d.csv"), delim = ";")
+```

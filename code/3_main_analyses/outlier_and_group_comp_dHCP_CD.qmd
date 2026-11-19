@@ -1,0 +1,276 @@
+---
+title: "Claustrum Connectivity in Prematurity dHCP outlier analysis for CD"
+author: "Jil Wendt"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+Group comparison of claustrum CD between preterm- and full-term-born neonates (dHCP cohort). ANCOVA per target ROI (CD \~ group + age at scan + sex), FDR correction across the 22 target ROIs. Descriptive statistics per ROI with two-sample t-tests (Welch-corrected if an F-test indicates unequal variances).
+
+- Input: `data/dHCP_CD_cog_ses.csv`
+- Outputs:
+  - `outputs/tables/dHCP_GroupComparison_CD_FTvsPT_TypeIII_<date>.csv` (results/groupcomp_CD_ANCOVA_dHCP.csv)
+  - `outputs/tables/dHCP_CD_ROI_summary_<date>.csv` (results/descriptives_CD_dHCP.csv)
+
+# 1 Setup
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(here)
+library(car)
+library(emmeans)
+
+tab_dir <- here::here("outputs", "tables")
+```
+
+#### Lookup Tables for Variable Names
+
+```{r}
+roi_labels <- c(
+  l_claustrum_ac_occ_l  = "Occipital Associative (L)",
+  r_claustrum_ac_occ_r  = "Occipital Associative (R)",
+  l_claustrum_ac_par_l  = "Parietal Associative (L)",
+  r_claustrum_ac_par_r  = "Parietal Associative (R)",
+  l_claustrum_ac_pfc_l  = "Prefrontal Associative (L)",
+  r_claustrum_ac_pfc_r  = "Prefrontal Associative (R)",
+  l_claustrum_ac_temp_l = "Temporal Associative (L)",
+  r_claustrum_ac_temp_r = "Temporal Associative (R)",
+  l_claustrum_c_pos_l   = "Posterior Cingulate (L)",
+  r_claustrum_c_pos_r   = "Posterior Cingulate (R)",
+  l_claustrum_c_ant_l   = "Anterior Cingulate (L)",
+  r_claustrum_c_ant_r   = "Anterior Cingulate (R)",
+  l_claustrum_pc_aud_l  = "Primary Auditory (L)",
+  r_claustrum_pc_aud_r  = "Primary Auditory (R)",
+  l_claustrum_pc_mot_l  = "Primary Motor (L)",
+  r_claustrum_pc_mot_r  = "Primary Motor (R)",
+  l_claustrum_pc_sens_l = "Primary Somatosensory (L)",
+  r_claustrum_pc_sens_r = "Primary Somatosensory (R)",
+  l_claustrum_pc_vis_l  = "Primary Visual (L)",
+  r_claustrum_pc_vis_r  = "Primary Visual (R)",
+  l_claustrum_sc_hip_l  = "Hippocampus (L)",
+  r_claustrum_sc_hip_r  = "Hippocampus (R)"
+)
+```
+
+## Load data
+
+```{r}
+dat_dHCP <- read_delim(
+  here("data", "dHCP_CD_cog_ses.csv"),
+  delim = ",",
+  trim_ws = TRUE,
+  locale = locale(decimal_mark = "."),
+  na = c(""," ","NA", "NaN", "n/a", ".", "-9999","999"),
+  col_types = cols(
+    Subject_ID = col_character(),
+    Session_ID = col_character()
+  ),
+  guess_max = 10000
+) |> janitor::clean_names()
+
+roi_cols <- grep("^[lr]_claustrum_", names(dat_dHCP), value = TRUE)
+stopifnot(length(roi_cols) == 22)
+
+# --- recode and name important factors ---
+# group as factor
+dat_dHCP <- dat_dHCP %>%
+  mutate(
+    group = factor(case_when(
+      group == "term" ~ "FT",
+      group == "pre" ~ "PT",
+      TRUE ~ NA_character_
+    ), levels = c("FT", "PT")),
+  )
+
+# sex as factor
+dat_dHCP <- dat_dHCP %>%
+  mutate(
+    sex = factor(sex, levels = c("Female", "Male"))
+  )
+```
+
+# 2 Group Comparison
+
+### Specific setup
+
+```{r}
+options(contrasts = c("contr.sum", "contr.poly"))
+stopifnot(is.factor(dat_dHCP$group), is.factor(dat_dHCP$sex))
+```
+
+## Run ANCOVA on full cohort
+
+```{r}
+cd_vars_dHCP <- grep("^l_|^r_", names(dat_dHCP), value = TRUE)
+
+run_ancova_one <- function(dv){
+  fml <- as.formula(paste(dv, "~ group + scan_age + sex"))
+  df  <- dat_dHCP[, all.vars(fml)] %>% na.omit()
+  if (nrow(df) < 20) return(NULL)
+
+  fit <- lm(fml, data = df)
+
+  a3  <- car::Anova(fit, type = 3)
+  a3_df <- as.data.frame(a3)
+  a3_df$Term <- rownames(a3_df)
+
+  ss_group <- a3_df$`Sum Sq`[a3_df$Term == "group"]
+  df_group <- a3_df$Df[a3_df$Term == "group"]
+  Fval     <- a3_df$`F value`[a3_df$Term == "group"]
+  pval     <- a3_df$`Pr(>F)`[a3_df$Term == "group"]
+
+  ss_res   <- a3_df$`Sum Sq`[a3_df$Term == "Residuals"]
+  df_res   <- a3_df$Df[a3_df$Term == "Residuals"]
+
+  # Partial eta^2
+  partial_eta2 <- as.numeric(ss_group / (ss_group + ss_res))
+
+  # Estimated marginal means and contrast (FT - PT)
+  emm   <- emmeans::emmeans(fit, ~ group)
+  comp  <- emmeans::contrast(emm, method = "pairwise") %>% summary(infer = TRUE)
+
+  emm_tbl <- as.data.frame(emm)
+  mean_FT <- emm_tbl$emmean[emm_tbl$group == "FT"]
+  mean_PT <- emm_tbl$emmean[emm_tbl$group == "PT"]
+  diff_FT_PT <- comp$estimate[1]  # FT - PT
+
+  dir_lab <- if (pval < 0.05) {
+    if (diff_FT_PT > 0) "FT > PT" else "PT > FT"
+  } else {
+    if (diff_FT_PT > 0) "NS (FT > PT)" else "NS (PT > FT)"
+  }
+
+  tibble(
+    dv            = dv,
+    ROI           = dplyr::recode(dv, !!!roi_labels, .default = dv),
+    N             = nrow(df),
+    F             = as.numeric(Fval),
+    df1           = as.numeric(df_group),
+    df2           = as.numeric(df_res),
+    p             = as.numeric(pval),
+    partial_eta2  = partial_eta2,
+    emmean_FT     = as.numeric(mean_FT),
+    emmean_PT     = as.numeric(mean_PT),
+    diff_FT_minus_PT = as.numeric(diff_FT_PT),
+    Direction     = dir_lab
+  )
+}
+```
+
+### Build results table
+
+```{r}
+res_group_dHCP <- map_dfr(cd_vars_dHCP, run_ancova_one)
+
+res_group_dHCP <- res_group_dHCP %>%
+  mutate(
+    p_FDR = p.adjust(p, method = "fdr"),
+    F_string = sprintf(
+      "F(1, %d) = %.2f, p = %s%s",
+      df2,
+      F,
+      ifelse(p < .001, "< 0.001",
+             sprintf("%.3f", p)),
+      ifelse(p_FDR < .001, "***",
+             ifelse(p_FDR < .01, "**",
+                    ifelse(p_FDR < .05, "*", "")))
+    )
+  ) %>%
+  arrange(p, p_FDR)
+
+#Save CSV
+outfile <- file.path(tab_dir, paste0("dHCP_GroupComparison_CD_FTvsPT_TypeIII_", format(Sys.Date()), ".csv"))
+readr::write_csv2(res_group_dHCP, outfile)
+message("Saved: ", outfile)
+```
+
+# 3 Descriptives
+
+```{r}
+long_cd <- dat_dHCP %>%
+  dplyr::select(subject_id, group, sex, scan_age, dplyr::all_of(roi_cols)) %>%
+  tidyr::pivot_longer(dplyr::all_of(roi_cols),
+                      names_to = "roi_code", values_to = "connectivity") %>%
+  dplyr::mutate(roi = factor(roi_code, levels = names(roi_labels), labels = roi_labels))
+
+stopifnot(!anyNA(long_cd$roi))
+
+# 1) ROI type
+classify_type <- function(roi_code) {
+  out <- dplyr::case_when(
+    grepl("_claustrum_(c|sc)_", roi_code) ~ "Limbic",
+    grepl("_claustrum_ac_",     roi_code) ~ "Associative",
+    grepl("_claustrum_pc_",     roi_code) ~ "Primary",
+    TRUE ~ NA_character_
+  )
+  stopifnot(!anyNA(out))
+  out
+}
+
+# row order
+roi_region_order <- c("ac_occ","ac_par","ac_pfc","ac_temp",
+                      "pc_aud","pc_mot","pc_sens","pc_vis",
+                      "c_ant","c_pos","sc_hip")
+
+# 2) Summary
+summarize_roi_t <- function(long_df) {
+  rois <- long_df %>%
+    dplyr::select(group, roi_code, roi, connectivity) %>%
+    dplyr::filter(!is.na(group), !is.na(connectivity)) %>%
+    dplyr::mutate(Type = classify_type(roi_code)) %>%
+    dplyr::group_by(roi_code, roi, Type) %>%
+    tidyr::nest() %>%
+    dplyr::ungroup()
+  
+  purrr::map_dfr(seq_len(nrow(rois)), function(i) {
+    df  <- rois$data[[i]]
+    rc  <- rois$roi_code[i]
+    rnm <- as.character(rois$roi[i])
+    typ <- rois$Type[i]
+    
+    x <- df %>% dplyr::filter(group == "FT") %>% dplyr::pull(connectivity)
+    y <- df %>% dplyr::filter(group == "PT") %>% dplyr::pull(connectivity)
+    if (length(x) < 2 || length(y) < 2) return(NULL)
+    
+    var_p     <- tryCatch(var.test(x, y)$p.value, error = function(e) NA_real_)
+    use_welch <- is.finite(var_p) && var_p < 0.05
+    
+    tt    <- t.test(x, y, var.equal = !use_welch)     # t = FT - PT
+    tt_t  <- unname(tt$statistic)
+    tt_df <- unname(tt$parameter)
+    tt_p  <- unname(tt$p.value)
+    
+    tibble(
+      Type = typ, ROI = rnm, roi_code = rc,
+      n_FT = length(x),
+      mean_sd_FT = sprintf("%.3f±%.3f", mean(x), sd(x)),
+      min_FT = sprintf("%.3f", min(x)), max_FT = sprintf("%.3f", max(x)),
+      range_FT = sprintf("%.3f", max(x) - min(x)),
+      n_PT = length(y),
+      mean_sd_PT = sprintf("%.3f±%.3f", mean(y), sd(y)),
+      min_PT = sprintf("%.3f", min(y)), max_PT = sprintf("%.3f", max(y)),
+      range_PT = sprintf("%.3f", max(y) - min(y)),
+      `t(df)` = sprintf("%.3f(%s)%s", tt_t,
+                        ifelse(use_welch, sprintf("%.2f", tt_df), as.integer(round(tt_df))),
+                        ifelse(use_welch, "*", "")),
+      p = ifelse(tt_p < .001, "<.001", sprintf("%.3f", tt_p)),
+      mean_FT_num = mean(x), median_FT_num = median(x), t_num = tt_t
+    )
+  }) %>%
+    dplyr::mutate(region = sub("^[lr]_claustrum_(.*)_[lr]$", "\\1", roi_code),
+                  hemi   = substr(roi_code, 1, 1)) %>%
+    dplyr::arrange(factor(Type, levels = c("Associative","Primary","Limbic")),
+                   factor(region, levels = roi_region_order),
+                   dplyr::desc(hemi)) %>%
+    dplyr::select(-region, -hemi)
+}
+
+cd_table <- summarize_roi_t(long_cd)
+
+readr::write_excel_csv2(cd_table, file.path(tab_dir, paste0("dHCP_CD_ROI_summary_", Sys.Date(), ".csv")))
+```

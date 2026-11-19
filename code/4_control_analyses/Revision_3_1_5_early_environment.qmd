@@ -1,0 +1,307 @@
+---
+title: "Claustrum Connectivity in Prematurity Early-Environment GLMs: Multicollinearity and Effect Sizes"
+author: "Jil Wendt"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+Multicollinearity, effect sizes with 95% CI and minimum detectable effect sizes for the early-environment GLMs in preterm-born participants (Supplementary control and robustness analyses, section 4). Models as in `GLM_analyses_essential.qmd` and `GLM_analyses_dHCP.qmd`. Spearman correlations and generalized VIF among the BLS environmental variables; partial r with 95% CI from the t statistic; sensitivity power analysis (80% power, alpha = 0.05 and 0.05/22).
+
+- Input: `data/adults_harmonized.csv`, `data/dHCP_CP_cog_ses.csv`
+- Outputs (`outputs/tables`):
+  - `Revision_env_GLMs_effectsizes_CI_<date>.csv`: estimates, 95% CI and partial r (results/env_GLM_partial_r_CI.csv)
+  - `Revision_env_GLMs_MDES_<date>.csv`: minimum detectable effect sizes (results/env_GLM_MDES.csv)
+  - `Revision_env_model_VIF_bls_<date>.csv`: VIF, BLS (results/env_VIF_BLS.csv)
+  - `Revision_env_vars_Spearman_bls<date>.csv`: Spearman correlations, BLS (results/env_Spearman_BLS.csv)
+
+# 1 Setup
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(broom)
+library(here)
+
+tab_dir <- here::here("outputs", "tables")
+```
+
+### Helper functions
+
+```{r}
+# --- Partial r with 95% CI ---
+add_partial_r <- function(res) {
+  r <- effectsize::t_to_r(res$t_value, df_error = res$df_resid, ci = 0.95)
+  res %>% mutate(partial_r = r$r, r_ci_lo = r$CI_low, r_ci_hi = r$CI_high)
+}
+
+# --- Minimum detectable effect size (sensitivity power analysis) ---
+mdes <- function(df_resid, alpha, power = 0.80) {
+  f2 <- pwr::pwr.f2.test(u = 1, v = df_resid, sig.level = alpha, power = power)$f2
+  tibble(alpha = alpha, power = power, f2 = f2, partial_r = sqrt(f2 / (1 + f2)))
+}
+
+options(contrasts = c("contr.treatment", "contr.poly"))
+```
+
+### Lookup table for variable names
+
+```{r}
+roi_labels <- c(
+  cp_ac_occ_l_ipsi  = "Occipital Associative (L)",
+  cp_ac_occ_r_ipsi  = "Occipital Associative (R)",
+  cp_ac_par_l_ipsi  = "Parietal Associative (L)",
+  cp_ac_par_r_ipsi  = "Parietal Associative (R)",
+  cp_ac_pfc_l_ipsi  = "Prefrontal Associative (L)",
+  cp_ac_pfc_r_ipsi  = "Prefrontal Associative (R)",
+  cp_ac_temp_l_ipsi = "Temporal Associative (L)",
+  cp_ac_temp_r_ipsi = "Temporal Associative (R)",
+  cp_c_pos_l_ipsi   = "Posterior Cingulate (L)",
+  cp_c_pos_r_ipsi   = "Posterior Cingulate (R)",
+  cp_c_ant_l_ipsi   = "Anterior Cingulate (L)",
+  cp_c_ant_r_ipsi   = "Anterior Cingulate (R)",
+  cp_pc_aud_l_ipsi  = "Primary Auditory (L)",
+  cp_pc_aud_r_ipsi  = "Primary Auditory (R)",
+  cp_pc_mot_l_ipsi  = "Primary Motor (L)",
+  cp_pc_mot_r_ipsi  = "Primary Motor (R)",
+  cp_pc_sens_l_ipsi = "Primary Somatosensory (L)",
+  cp_pc_sens_r_ipsi = "Primary Somatosensory (R)",
+  cp_pc_vis_l_ipsi  = "Primary Visual (L)",
+  cp_pc_vis_r_ipsi  = "Primary Visual (R)",
+  cp_sc_hip_l_ipsi  = "Hippocampus (L)",
+  cp_ac_hip_r_ipsi  = "Hippocampus (R)"
+)
+
+roi_labels_dHCP <- setNames(
+  unname(roi_labels),
+  c("l_claustrum_ac_occ_l", "r_claustrum_ac_occ_r", "l_claustrum_ac_par_l", "r_claustrum_ac_par_r",
+    "l_claustrum_ac_pfc_l", "r_claustrum_ac_pfc_r", "l_claustrum_ac_temp_l", "r_claustrum_ac_temp_r",
+    "l_claustrum_c_pos_l", "r_claustrum_c_pos_r", "l_claustrum_c_ant_l", "r_claustrum_c_ant_r",
+    "l_claustrum_pc_aud_l", "r_claustrum_pc_aud_r", "l_claustrum_pc_mot_l", "r_claustrum_pc_mot_r",
+    "l_claustrum_pc_sens_l", "r_claustrum_pc_sens_r", "l_claustrum_pc_vis_l", "r_claustrum_pc_vis_r",
+    "l_claustrum_sc_hip_l", "r_claustrum_sc_hip_r")
+)
+
+term_labels <- c(
+  ses0y2_facMiddle = "SES: middle vs. upper",
+  ses0y2_facLower  = "SES: lower vs. upper",
+  psi1             = "PSI",
+  betreu           = "PIRI",
+  optws            = "Pregnancy optimality",
+  ses_score        = "SES score (dHCP)"
+)
+```
+
+# 2 BLS cohort (adults)
+
+## Load data
+
+```{r}
+dat <- read_delim(
+  here("data", "adults_harmonized.csv"),
+  delim = ";",
+  trim_ws = TRUE,
+  locale = locale(decimal_mark = ","),
+  na = c(""," ","NA", "NaN", "n/a", ".", "-9999","999"),
+  col_types = cols(
+    Subject = col_character(),
+    ID      = col_character()
+  ),
+  guess_max = 10000
+) |> janitor::clean_names()
+
+# --- recode and name important factors ---
+dat <- dat %>%
+  mutate(
+    group = factor(case_when(
+      groupcode == 0 ~ "FT",
+      groupcode == 1 ~ "PT",
+      TRUE ~ NA_character_
+    ), levels = c("FT", "PT")),
+    
+    sex = factor(case_when(
+      sex == 1 ~ "Male",
+      sex == 2 ~ "Female",
+      TRUE ~ NA_character_
+    ), levels = c("Female", "Male"))
+  )
+```
+
+### Create subsets
+
+```{r}
+final_dat_CP <- dat %>%
+  dplyr::select(-starts_with("cd_"), -any_of("id"))
+
+cp_vars    <- grep("^cp_", names(final_dat_CP), value = TRUE)
+env_vars   <- c("ses0y2_fac", "psi1", "betreu", "optws")
+covars_BLS <- c("age_at_scan", "sex")
+
+dat_PT_fac <- final_dat_CP %>%
+  filter(group == "PT") %>%
+  mutate(
+    across(all_of(c(cp_vars, "psi1", "betreu", "optws")), ~ {
+      if (is.factor(.)) suppressWarnings(as.numeric(as.character(.))) else as.numeric(.)
+    }),
+    ses0y2_fac = factor(ses0y2, levels = c(1, 2, 3),
+                        labels = c("Upper", "Middle", "Lower")) # 1 = upper, 2 = middle, 3 = lower class
+  )
+```
+
+## 2.1 Multicollinearity diagnostics
+
+```{r}
+dat_env_BLS <- dat_PT_fac %>% drop_na(all_of(c(env_vars, covars_BLS)))
+
+# Spearman correlations among the four environmental variables
+cor_env_BLS <- dat_env_BLS %>%
+  transmute(SES = as.numeric(ses0y2_fac), PSI = psi1, PIRI = betreu,
+            `Pregnancy optimality` = optws) %>%
+  cor(method = "spearman")
+
+# Generalized VIF of the full model
+fml_vif <- as.formula(paste(cp_vars[1], "~", paste(c(env_vars, covars_BLS), collapse = " + ")))
+fit_vif <- lm(fml_vif, data = dat_env_BLS)
+
+vif_BLS <- car::vif(fit_vif) %>%
+  as.data.frame() %>%
+  rownames_to_column("term") %>%
+  rename(df = Df, GVIF_adj = `GVIF^(1/(2*Df))`) %>%
+  mutate(VIF_equivalent = GVIF_adj^2)
+```
+
+## 2.2 Full model with 95% CI and partial r
+
+```{r}
+results_env_BLS <- map_dfr(cp_vars, function(dv) {
+  fml <- as.formula(paste(dv, "~", paste(c(env_vars, covars_BLS), collapse = " + ")))
+  df  <- dat_PT_fac[, all.vars(fml)] %>% na.omit()
+  fit <- lm(fml, data = df)
+  
+  tidy(fit) %>%
+    filter(grepl("^ses0y2_fac", term) | term %in% env_vars) %>%
+    mutate(conf.low  = estimate - 1.96 * std.error,
+           conf.high = estimate + 1.96 * std.error,
+           dv = dv, n = nrow(df), df_resid = df.residual(fit))
+}) %>%
+  rename(t_value = statistic) %>%
+  group_by(term) %>%
+  mutate(p_fdr = p.adjust(p.value, method = "fdr")) %>%
+  ungroup() %>%
+  add_partial_r()
+```
+
+## 2.3 Sensitivity power analysis - minimum detectable effect (mdes)
+
+```{r}
+df_resid_BLS <- unique(results_env_BLS$df_resid)
+stopifnot(length(df_resid_BLS) == 1)
+
+mdes_BLS <- map_dfr(c(0.05, 0.05 / 22), ~ mdes(df_resid_BLS, .x)) %>%
+  mutate(cohort = "BLS (preterm adults)", n = unique(results_env_BLS$n), df_resid = df_resid_BLS)
+```
+
+# 3 dHCP cohort (neonates)
+
+## Load data
+
+```{r}
+dat_dHCP <- read_delim(
+  here("data", "dHCP_CP_cog_ses.csv"),
+  delim = ",",
+  trim_ws = TRUE,
+  locale = locale(decimal_mark = "."),
+  na = c(""," ","NA", "NaN", "n/a", ".", "-9999","999"),
+  col_types = cols(
+    Subject_ID = col_character(),
+    Session_ID = col_character()
+  ),
+  guess_max = 10000
+) |> janitor::clean_names()
+
+cp_vars_dHCP <- grep("^l_|^r_", names(dat_dHCP), value = TRUE)
+covars_dHCP  <- c("scan_age", "sex")
+
+dat_dHCP_PT_num <- dat_dHCP %>%
+  mutate(group = factor(case_when(
+    group == "term" ~ "FT",
+    group == "pre"  ~ "PT",
+    TRUE ~ NA_character_
+  ), levels = c("FT", "PT"))) %>%
+  filter(group == "PT") %>%
+  mutate(across(all_of(c(cp_vars_dHCP, "ses_score")), as.numeric))
+```
+
+## 3.1 SES model with 95% CIs and partial r
+
+```{r}
+results_SES_dHCP <- map_dfr(cp_vars_dHCP, function(dv) {
+  fml <- as.formula(paste(dv, "~", paste(c("ses_score", covars_dHCP), collapse = " + ")))
+  df  <- dat_dHCP_PT_num[, all.vars(fml)] %>% na.omit()
+  fit <- lm(fml, data = df)
+  
+  tidy(fit) %>%
+    filter(term == "ses_score") %>%
+    mutate(conf.low  = estimate - 1.96 * std.error,
+           conf.high = estimate + 1.96 * std.error,
+           dv = dv, n = nrow(df), df_resid = df.residual(fit))
+}) %>%
+  rename(t_value = statistic) %>%
+  mutate(p_fdr = p.adjust(p.value, method = "fdr")) %>%
+  add_partial_r()
+```
+
+## 3.2 Sensitivity power analysis
+
+```{r}
+df_resid_dHCP <- unique(results_SES_dHCP$df_resid)
+stopifnot(length(df_resid_dHCP) == 1)
+
+mdes_dHCP <- map_dfr(c(0.05, 0.05 / 22), ~ mdes(df_resid_dHCP, .x)) %>%
+  mutate(cohort = "dHCP (preterm neonates)", n = unique(results_SES_dHCP$n), df_resid = df_resid_dHCP)
+```
+
+# 4 Summary
+
+## Detectable effect sizes
+
+```{r}
+mdes_all <- bind_rows(mdes_dHCP, mdes_BLS) %>%
+  dplyr::select(cohort, n, df_resid, alpha, power, f2, partial_r)
+```
+
+## Observed effect sizes and CIs
+
+```{r}
+results_env_all <- bind_rows(
+  `dHCP (preterm neonates)` = results_SES_dHCP %>% mutate(roi = unname(roi_labels_dHCP[dv])),
+  `BLS (preterm adults)`    = results_env_BLS  %>% mutate(roi = unname(roi_labels[dv])),
+  .id = "cohort"
+) %>%
+  mutate(term_label = unname(term_labels[term]))
+```
+
+## Table
+
+```{r}
+table_env_all <- results_env_all %>%
+  dplyr::select(
+    Cohort = cohort, ROI = roi, Term = term_label,
+    Estimate = estimate, `95% CI lo` = conf.low, `95% CI hi` = conf.high,
+    t = t_value, df = df_resid, p = p.value, `p (FDR)` = p_fdr,
+    `partial r` = partial_r, `r 95% CI lo` = r_ci_lo, `r 95% CI hi` = r_ci_hi, N = n
+  )
+```
+
+## Save outputs
+
+```{r}
+write_csv2(table_env_all, file.path(tab_dir, paste0("Revision_env_GLMs_effectsizes_CI_", format(Sys.Date()), ".csv")))
+write_csv2(vif_BLS,       file.path(tab_dir, paste0("Revision_env_model_VIF_bls_", format(Sys.Date()), ".csv")))
+write_csv2(as_tibble(cor_env_BLS, rownames = "variable"),
+           file.path(tab_dir, paste0("Revision_env_vars_Spearman_bls", format(Sys.Date()), ".csv")))
+write_csv2(mdes_all,      file.path(tab_dir, paste0("Revision_env_GLMs_MDES_", format(Sys.Date()), ".csv")))
+```

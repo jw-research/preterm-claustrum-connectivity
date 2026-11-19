@@ -1,0 +1,705 @@
+---
+title: "Claustrum Connectivity in Prematurity Data Exploration"
+author: "Jil Wendt"
+format:
+  html:
+    toc: true
+    code-fold: true
+editor: visual
+---
+
+Sample characteristics, CP and CD descriptives and outlier detection in the adult cohort (BLS), and the intraventricular hemorrhage (IVH) control analysis.
+
+- Input: `data/adults_harmonized.csv`
+- Outputs:
+  - `outputs/tables/Table1A_cont_normal_<date>.csv`, `Table1B_cont_skew_<date>.csv`, `Table1C_categorical_<date>.csv`: Tables 1 and 2, BLS (results/Table1_2_cont_normal.csv, Table1_2_cont_skew.csv, Table1_2_categorical.csv)
+  - `outputs/tables/TableSX_CP_ROI_summary_NEW_<date>.csv`: Table S5 (results/descriptives_CP_BLS.csv)
+  - `outputs/tables/TableSY_CD_ROI_summary_NEW_<date>.csv`: Table S7 (results/descriptives_CD_BLS.csv)
+  - `outputs/figures/Outlier_counts_per_ROI_<date>.png`: Supplementary Figure S6
+  - `checkpoints/eda_checkpoint.rds`: input for `Revision_2_1_3.qmd`
+
+# Setup
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(broom)
+library(here)
+
+fig_dir <- here::here("outputs", "figures")
+tab_dir <- here::here("outputs", "tables")
+```
+
+#### Helper Functions
+
+```{r}
+save_plot_png <- function(plot, filename, width = 9, height = 7, dpi = 300) {
+  outfile <- file.path(
+    fig_dir,
+    paste0(filename, "_", format(Sys.Date()), ".png")
+  )
+  ggplot2::ggsave(outfile, plot = plot, width = width, height = height, dpi = dpi)
+  message("Plot saved to: ", outfile)
+  return(outfile)
+}
+```
+
+#### Lookup Tables for Variable Names
+
+```{r}
+roi_labels <- c(
+  cp_ac_occ_l_ipsi  = "Occipital Associative (L)",
+  cp_ac_occ_r_ipsi  = "Occipital Associative (R)",
+  cp_ac_par_l_ipsi  = "Parietal Associative (L)",
+  cp_ac_par_r_ipsi  = "Parietal Associative (R)",
+  cp_ac_pfc_l_ipsi  = "Prefrontal Associative (L)",
+  cp_ac_pfc_r_ipsi  = "Prefrontal Associative (R)",
+  cp_ac_temp_l_ipsi = "Temporal Associative (L)",
+  cp_ac_temp_r_ipsi = "Temporal Associative (R)",
+  cp_c_pos_l_ipsi   = "Posterior Cingulate (L)",
+  cp_c_pos_r_ipsi   = "Posterior Cingulate (R)",
+  cp_c_ant_l_ipsi   = "Anterior Cingulate (L)",
+  cp_c_ant_r_ipsi   = "Anterior Cingulate (R)",
+  cp_pc_aud_l_ipsi  = "Primary Auditory (L)",
+  cp_pc_aud_r_ipsi  = "Primary Auditory (R)",
+  cp_pc_mot_l_ipsi  = "Primary Motor (L)",
+  cp_pc_mot_r_ipsi  = "Primary Motor (R)",
+  cp_pc_sens_l_ipsi = "Primary Somatosensory (L)",
+  cp_pc_sens_r_ipsi = "Primary Somatosensory (R)",
+  cp_pc_vis_l_ipsi  = "Primary Visual (L)",
+  cp_pc_vis_r_ipsi  = "Primary Visual (R)",
+  cp_sc_hip_l_ipsi  = "Hippocampus (L)",
+  cp_ac_hip_r_ipsi  = "Hippocampus (R)"
+)
+
+roi_labels_CD <- c(
+  cd_ac_occ_l_ipsi  = "Occipital Associative (L)",
+  cd_ac_occ_r_ipsi  = "Occipital Associative (R)",
+  cd_ac_par_l_ipsi  = "Parietal Associative (L)",
+  cd_ac_par_r_ipsi  = "Parietal Associative (R)",
+  cd_ac_pfc_l_ipsi  = "Prefrontal Associative (L)",
+  cd_ac_pfc_r_ipsi  = "Prefrontal Associative (R)",
+  cd_ac_temp_l_ipsi = "Temporal Associative (L)",
+  cd_ac_temp_r_ipsi = "Temporal Associative (R)",
+  cd_c_pos_l_ipsi   = "Posterior Cingulate (L)",
+  cd_c_pos_r_ipsi   = "Posterior Cingulate (R)",
+  cd_c_ant_l_ipsi   = "Anterior Cingulate (L)",
+  cd_c_ant_r_ipsi   = "Anterior Cingulate (R)",
+  cd_pc_aud_l_ipsi  = "Primary Auditory (L)",
+  cd_pc_aud_r_ipsi  = "Primary Auditory (R)",
+  cd_pc_mot_l_ipsi  = "Primary Motor (L)",
+  cd_pc_mot_r_ipsi  = "Primary Motor (R)",
+  cd_pc_sens_l_ipsi = "Primary Somatosensory (L)",
+  cd_pc_sens_r_ipsi = "Primary Somatosensory (R)",
+  cd_pc_vis_l_ipsi  = "Primary Visual (L)",
+  cd_pc_vis_r_ipsi  = "Primary Visual (R)",
+  cd_sc_hip_l_ipsi  = "Hippocampus (L)",
+  cd_ac_hip_r_ipsi  = "Hippocampus (R)"
+)
+
+var_labels <- c(
+  b3z3 = "Duration in hospital (at birth)",
+  dnti = "Duration of Neonatal Treatment (days)",
+  inti = "Intensity of Neonatal Treatment Index",
+  wie_gesiq = "Full-Scale IQ (age normed)",
+  tz = "Gestation (weeks)",
+  gew = "Birth weight (grams)",
+  atm3 = "Ventilation (days)",
+  apg1 = "APGAR 1 minute",
+  apg2 = "APGAR 5 minutes",
+  apg3 = "APGAR 10 minutes",
+  hemo = "Intracranial hemorrage",
+  optg = "Optimality birth",
+  optn = "Optimality neonatal",
+  optvs = "Optimality pre-pregnancy",
+  optws = "Optimality pregnancy",
+  TRAB_overall = "TRAB overall assessment: attention",
+  ANT_mean = "ANT 26 years: Mean",
+  ANT_alerting = "ANT 26 years: Alerting",
+  ANT_orienting = "ANT 26 years: Orienting",
+  ANT_congruency = "ANT 26 years: Congruency",
+  RAN_objects = "RAN/RAS 26 years: Objects (standard score)",
+  RAN_numbers = "RAN/RAS 26 years: Numbers (standard score)",
+  betreu = "Parent-infant relationship index (PIRI, neonatal/5 months",
+  mutalt = "Maternal age",
+  fai1 = "Family Adversity Index, at birth/5 months (combined)",
+  fai2 = "Family Adversity Index, 20 months",
+  fai3 = "Family Adversity Index, 4 years",
+  psi1 = "Psychosocial Stress Index, neonatal/5months (combined)",
+  psi2 = "Psychosocial Stress Index, 20 months",
+  psi3 = "Psychosocial Stress Index, 4 years",
+  erfolg = "School success between 6 to 13 years",
+  ses0y2 = "SES at birth",
+  sif6 = "K-ABC 6 years: overall IQ",
+  sif8 = "K-ABC 8 years: overall IQ",
+  stsed8 = "Sequential processing subscale (standard score), 8 yrs",
+  stsgd8 = "Simultaneous processing subscale (standard score), 8 yrs",
+  stsif8 = "Intellectual abilities scale (standard score), 8 yrs",
+  stnv8 = "Non-verbal scale (standard score), 8 yrs",
+  wortsk8 = "Word order scale (value) 8 yrs",
+  ortest8 = "Faces and places (standard score) 8 yrs",
+  colword = "Stroop 26 years: Reading colour words, age normed (t-value)",
+  colline = "Stroop 26 years: Naming colour lines, age normed (t-value)",
+  interference = "Stroop 26 years: Naming colour of colour words (interference), age normed (t-value)",
+  attention = "YASR 26 years: attention problems (sum)"
+)
+```
+
+## Load data
+
+```{r}
+dat <- read_delim(
+  here("data", "adults_harmonized.csv"),
+  delim = ";",
+  trim_ws = TRUE,
+  locale = locale(decimal_mark = ","),
+  na = c(""," ","NA", "NaN", "n/a", ".", "-9999","999"),
+  col_types = cols(
+    Subject = col_character(),
+    ID      = col_character()
+  ),
+  guess_max = 10000
+) |> janitor::clean_names()
+
+dat <- dat %>%
+  mutate(
+    group = factor(case_when(
+      groupcode == 0 ~ "FT",
+      groupcode == 1 ~ "PT",
+      TRUE ~ NA_character_
+    ), levels = c("FT", "PT")),
+
+    sex = factor(case_when(
+      sex == 1 ~ "Male",
+      sex == 2 ~ "Female",
+      TRUE ~ NA_character_
+    ), levels = c("Female", "Male"))
+  )
+```
+
+## Recode discrete variables
+
+```{r}
+find_discrete_candidates <- function(data, max_unique = 10) {
+  data %>%
+    summarise(across(where(is.numeric), ~ list(unique(.)))) %>%
+    tidyr::pivot_longer(
+      everything(),
+      names_to = "variable",
+      values_to = "unique_values"
+    ) %>%
+    mutate(
+      n_unique = purrr::map_int(unique_values, length),
+      sample_values = purrr::map_chr(unique_values, ~ paste(sort(.x), collapse = ", "))
+    ) %>%
+    filter(n_unique <= max_unique) %>%
+    dplyr::select(variable, n_unique, sample_values) %>%
+    arrange(n_unique)
+}
+
+cands <- find_discrete_candidates(dat, max_unique = 11) |>
+  dplyr::pull(variable)
+
+dat <- dat |>
+  dplyr::mutate(
+    dplyr::across(
+      dplyr::all_of(cands) & where(~ !is.factor(.)),
+      ~ factor(.x, levels = sort(unique(.x)))
+    )
+  )
+```
+
+## Adjust data and create subsets
+
+```{r}
+drop_vars <- c("id")
+
+final_dat_CP <- dat %>%
+  dplyr::select(-starts_with("cd_"), -all_of(drop_vars))
+
+final_dat_CD <- dat %>%
+  dplyr::select(-starts_with("cp_"), -all_of(drop_vars))
+```
+
+# Sample characteristics (Tables 1 and 2)
+
+```{r}
+cont_normal <- c(
+  "age_at_scan", "tz", "gew", "optn", "optg", "optws",
+  "sif8", "stsed8", "stsgd8", "wie_gesiq",
+  "colword", "colline", "interference",
+  "ant_alerting", "ant_orienting", "ant_congruency"
+)
+
+cont_skewed <- c("b3z3", "betreu", "psi1", "inti")
+cat_vars    <- c("sex", "ses0y2")
+
+.pretty_name <- function(v) {
+  if (exists("var_labels")) dplyr::coalesce(unname(var_labels[v]), v) else v
+}
+
+.split_ft_pt <- function(df, v) {
+  df %>%
+    dplyr::select(group, !!sym(v)) %>%
+    filter(!is.na(.data[[v]]), !is.na(group)) %>%
+    mutate(group = droplevels(group))
+}
+
+# normally distributed: t-test (Welch if variances differ)
+summ_cont_normal <- purrr::map_dfr(cont_normal, function(v) {
+  d <- .split_ft_pt(dat, v)
+  if (nrow(d) == 0 || length(unique(d$group)) < 2) return(NULL)
+
+  x <- d %>% filter(group == "FT") %>% pull(!!sym(v))
+  y <- d %>% filter(group == "PT") %>% pull(!!sym(v))
+
+  var_p <- tryCatch(var.test(x, y)$p.value, error = function(e) NA_real_)
+  use_welch <- is.finite(var_p) && !is.na(var_p) && var_p < 0.05
+
+  tt <- t.test(x, y, var.equal = !use_welch)
+  tt_t  <- unname(tt$statistic)
+  tt_df <- unname(tt$parameter)
+  tt_p  <- unname(tt$p.value)
+
+  ft_n   <- length(x); pt_n <- length(y)
+  ft_m   <- mean(x); ft_sd <- sd(x)
+  pt_m   <- mean(y); pt_sd <- sd(y)
+  ft_min <- min(x);  ft_max <- max(x)
+  pt_min <- min(y);  pt_max <- max(y)
+
+  tibble(
+    Variable         = .pretty_name(v),
+    n_FT             = ft_n,
+    mean_sd_FT       = sprintf("%.2f±%.2f", ft_m, ft_sd),
+    min_FT           = round(ft_min, 2),
+    max_FT           = round(ft_max, 2),
+    range_FT         = round(ft_max - ft_min, 2),
+    n_PT             = pt_n,
+    mean_sd_PT       = sprintf("%.2f±%.2f", pt_m, pt_sd),
+    min_PT           = round(pt_min, 2),
+    max_PT           = round(pt_max, 2),
+    range_PT         = round(pt_max - pt_min, 2),
+    t_df             = sprintf("%.2f(%s)%s",
+                               tt_t,
+                               ifelse(use_welch, sprintf("%.1f", tt_df), as.integer(round(tt_df))),
+                               ifelse(use_welch, "*", "")),
+    p                 = ifelse(tt_p < .001, "<.001", sprintf("%.3f", tt_p))
+  )
+})
+
+# skewed: Mann-Whitney U
+summ_cont_skew <- purrr::map_dfr(cont_skewed, function(v) {
+  d <- .split_ft_pt(dat, v)
+  if (nrow(d) == 0 || length(unique(d$group)) < 2) return(NULL)
+
+  x <- d %>% filter(group == "FT") %>% pull(!!sym(v))
+  y <- d %>% filter(group == "PT") %>% pull(!!sym(v))
+
+  wt <- wilcox.test(x, y, exact = FALSE)
+  U  <- unname(wt$statistic)
+  p  <- unname(wt$p.value)
+
+  fmt_med_iqr <- function(z) {
+    med <- median(z); q1 <- quantile(z, .25); q3 <- quantile(z, .75)
+    sprintf("%.2f (%.2f)", med, q3 - q1)
+  }
+
+  ft_min <- min(x); ft_max <- max(x)
+  pt_min <- min(y); pt_max <- max(y)
+
+  tibble(
+    Variable       = .pretty_name(v),
+    n_FT           = length(x),
+    med_iqr_FT     = fmt_med_iqr(x),
+    min_FT         = round(ft_min, 2),
+    max_FT         = round(ft_max, 2),
+    range_FT       = round(ft_max - ft_min, 2),
+    n_PT           = length(y),
+    med_iqr_PT     = fmt_med_iqr(y),
+    min_PT         = round(pt_min, 2),
+    max_PT         = round(pt_max, 2),
+    range_PT       = round(pt_max - pt_min, 2),
+    U              = round(U, 1),
+    p              = ifelse(p < .001, "<.001", sprintf("%.3f", p))
+  )
+})
+
+# categorical: Fisher's exact test
+summ_cats <- purrr::map_dfr(cat_vars, function(v) {
+  d <- dat %>%
+    dplyr::select(group, !!sym(v)) %>%
+    filter(!is.na(group), !is.na(.data[[v]])) %>%
+    mutate(group = droplevels(group))
+
+  if (nrow(d) == 0 || length(unique(d$group)) < 2) return(NULL)
+
+  tab <- table(d$group, d[[v]])
+  pval <- tryCatch(fisher.test(tab)$p.value, error = function(e) NA_real_)
+
+  lvls <- colnames(tab)
+  pct_str <- function(row_vec) {
+    total <- sum(row_vec)
+    if (total == 0) return(paste(rep("0%", length(row_vec)), collapse = " / "))
+    paste(sprintf("%d%%", round(100 * row_vec / total)), collapse = " / ")
+  }
+
+  ft_pct <- pct_str(tab["FT", , drop = FALSE])
+  pt_pct <- pct_str(tab["PT", , drop = FALSE])
+
+  tibble(
+    Variable    = .pretty_name(v),
+    n_FT        = sum(tab["FT", ]),
+    pct_levels_FT = ft_pct,
+    n_PT        = sum(tab["PT", ]),
+    pct_levels_PT = pt_pct,
+    levels_display = paste(lvls, collapse = " / "),
+    p           = ifelse(!is.na(pval) && pval < .001, "<.001",
+                         ifelse(is.na(pval), "—", sprintf("%.3f", pval)))
+  )
+})
+readr::write_csv(summ_cont_normal, file.path(tab_dir, paste0("Table1A_cont_normal_", Sys.Date(), ".csv")))
+readr::write_csv(summ_cont_skew,   file.path(tab_dir, paste0("Table1B_cont_skew_",   Sys.Date(), ".csv")))
+readr::write_csv(summ_cats,        file.path(tab_dir, paste0("Table1C_categorical_", Sys.Date(), ".csv")))
+```
+
+# CP and CD descriptives (Tables S5, S7)
+
+```{r}
+long_cp <- final_dat_CP %>%
+  dplyr::select(subject, group, sex, age_at_scan, scanner_id, dplyr::starts_with("cp_")) %>%
+  tidyr::pivot_longer(dplyr::starts_with("cp_"),
+                      names_to = "roi_code", values_to = "connectivity") %>%
+  dplyr::mutate(roi = factor(roi_code, levels = names(roi_labels), labels = roi_labels))
+
+long_cd <- final_dat_CD %>%
+  dplyr::select(subject, group, sex, age_at_scan, scanner_id, dplyr::starts_with("cd_")) %>%
+  tidyr::pivot_longer(dplyr::starts_with("cd_"),
+                      names_to = "roi_code", values_to = "connectivity") %>%
+  dplyr::mutate(roi = factor(roi_code, levels = names(roi_labels_CD), labels = roi_labels_CD))
+
+classify_type <- function(roi_code) {
+  dplyr::case_when(
+    grepl("^c[pd]_c_|^c[pd]_sc_|^c[pd]_ac_hip|^c[pd]_sc_hip", roi_code) ~ "Limbic",
+    grepl("^c[pd]_ac_", roi_code) ~ "Associative",
+    grepl("^c[pd]_pc_", roi_code) ~ "Primary",
+    TRUE ~ "Associative"
+  )
+}
+
+summarize_roi_t <- function(long_df) {
+  rois <- long_df %>%
+    dplyr::select(group, roi_code, roi, connectivity) %>%
+    dplyr::filter(!is.na(group), !is.na(connectivity)) %>%
+    dplyr::mutate(Type = classify_type(roi_code)) %>%
+    dplyr::group_by(roi_code, roi, Type) %>%
+    tidyr::nest() %>%
+    dplyr::ungroup()
+
+  purrr::map_dfr(seq_len(nrow(rois)), function(i) {
+    df  <- rois$data[[i]]
+    rc  <- rois$roi_code[i]
+    rnm <- as.character(rois$roi[i])
+    typ <- rois$Type[i]
+
+    x <- df %>% dplyr::filter(group == "FT") %>% dplyr::pull(connectivity)
+    y <- df %>% dplyr::filter(group == "PT") %>% dplyr::pull(connectivity)
+    if (length(x) < 2 || length(y) < 2) return(NULL)
+
+    var_p <- tryCatch(var.test(x, y)$p.value, error = function(e) NA_real_)
+    use_welch <- is.finite(var_p) && !is.na(var_p) && var_p < 0.05
+
+    tt <- t.test(x, y, var.equal = !use_welch)
+    tt_t  <- unname(tt$statistic)
+    tt_df <- unname(tt$parameter)
+    tt_p  <- unname(tt$p.value)
+
+    tibble(
+      Type        = typ,
+      ROI         = rnm,
+      roi_code    = rc,
+      n_FT        = length(x),
+      mean_sd_FT  = sprintf("%.3f±%.3f", mean(x), sd(x)),
+      min_FT      = sprintf("%.3f", min(x)),
+      max_FT      = sprintf("%.3f", max(x)),
+      range_FT    = sprintf("%.3f", max(x) - min(x)),
+      n_PT        = length(y),
+      mean_sd_PT  = sprintf("%.3f±%.3f", mean(y), sd(y)),
+      min_PT      = sprintf("%.3f", min(y)),
+      max_PT      = sprintf("%.3f", max(y)),
+      range_PT    = sprintf("%.3f", max(y) - min(y)),
+      `t(df)`     = sprintf("%.3f(%s)%s",
+                            tt_t,
+                            ifelse(use_welch, sprintf("%.2f", tt_df), as.integer(round(tt_df))),
+                            ifelse(use_welch, "*", "")),
+      p           = ifelse(tt_p < .001, "<.001", sprintf("%.3f", tt_p))
+    )
+  }) %>%
+    dplyr::arrange(factor(Type, levels = c("Associative","Primary","Limbic")),
+                   ROI)
+}
+
+cp_table <- summarize_roi_t(long_cp)
+cd_table <- summarize_roi_t(long_cd)
+readr::write_csv2(cp_table, file.path(tab_dir, paste0("TableSX_CP_ROI_summary_NEW_", Sys.Date(), ".csv")))
+readr::write_csv2(cd_table, file.path(tab_dir, paste0("TableSY_CD_ROI_summary_NEW_", Sys.Date(), ".csv")))
+```
+
+# Outliers
+
+Outliers per ROI: observations below Q1 - 1.5 IQR or above Q3 + 1.5 IQR.
+
+### CP
+
+```{r}
+stopifnot(all(c("subject","roi_code","roi","connectivity") %in% names(long_cp)))
+
+long_cp_outliers <- long_cp %>%
+  dplyr::select(subject, roi_code, roi, value = connectivity)
+
+cp_stats <- long_cp_outliers %>%
+  dplyr::group_by(roi_code, roi) %>%
+  dplyr::summarise(
+    q1     = stats::quantile(value, 0.25, na.rm = TRUE),
+    q3     = stats::quantile(value, 0.75, na.rm = TRUE),
+    iqr    = q3 - q1,
+    lower  = q1 - 1.5 * iqr,
+    upper  = q3 + 1.5 * iqr,
+    mean   = mean(value, na.rm = TRUE),
+    median = median(value, na.rm = TRUE),
+    n      = dplyr::n(),
+    .groups = "drop"
+  )
+
+outlier_table <- long_cp_outliers %>%
+  dplyr::left_join(cp_stats, by = c("roi_code", "roi")) %>%
+  dplyr::filter(!is.na(value) & ((value < lower) | (value > upper))) %>%
+  dplyr::group_by(roi_code, roi) %>%
+  dplyr::mutate(n_outliers = dplyr::n()) %>%
+  dplyr::ungroup() %>%
+  dplyr::arrange(roi, subject) %>%
+  dplyr::mutate(dplyr::across(c(value, mean, median, lower, upper), ~ round(.x, 4)))
+
+roi_totals <- long_cp %>%
+  group_by(roi) %>%
+  summarise(total_n = sum(!is.na(connectivity)), .groups = "drop")
+
+outlier_summary <- outlier_table %>%
+  dplyr::group_by(roi_code, roi) %>%
+  dplyr::summarise(
+    n_outliers = dplyr::n(),
+    subjects   = paste(subject, collapse = ", "),
+    values     = paste(value, collapse = ", "),
+    lower      = dplyr::first(lower),
+    upper      = dplyr::first(upper),
+    mean       = dplyr::first(mean),
+    median     = dplyr::first(median),
+    .groups    = "drop"
+  ) %>%
+  dplyr::arrange(dplyr::desc(n_outliers))
+
+outlier_summary <- outlier_summary %>%
+  left_join(roi_totals, by = "roi") %>%
+  mutate(
+    perc_out = 100 * n_outliers / total_n,
+    label_text = paste0(n_outliers, " (", round(perc_out, 1), "%)")
+  )
+```
+
+### CD
+
+```{r}
+stopifnot(all(c("subject","roi_code","roi","connectivity") %in% names(long_cd)))
+
+long_cd_outliers <- long_cd %>%
+  dplyr::select(subject, roi_code, roi, value = connectivity)
+
+cd_stats <- long_cd_outliers %>%
+  dplyr::group_by(roi_code, roi) %>%
+  dplyr::summarise(
+    q1     = stats::quantile(value, 0.25, na.rm = TRUE),
+    q3     = stats::quantile(value, 0.75, na.rm = TRUE),
+    iqr    = q3 - q1,
+    lower  = q1 - 1.5 * iqr,
+    upper  = q3 + 1.5 * iqr,
+    mean   = mean(value, na.rm = TRUE),
+    median = median(value, na.rm = TRUE),
+    n      = dplyr::n(),
+    .groups = "drop"
+  )
+
+outlier_table_CD <- long_cd_outliers %>%
+  dplyr::left_join(cd_stats, by = c("roi_code", "roi")) %>%
+  dplyr::filter(!is.na(value) & ((value < lower) | (value > upper))) %>%
+  dplyr::group_by(roi_code, roi) %>%
+  dplyr::mutate(n_outliers = dplyr::n()) %>%
+  dplyr::ungroup() %>%
+  dplyr::arrange(roi, subject) %>%
+  dplyr::mutate(dplyr::across(c(value, mean, median, lower, upper), ~ round(.x, 4)))
+
+roi_totals_cd <- long_cd %>%
+  group_by(roi) %>%
+  summarise(total_n = sum(!is.na(connectivity)), .groups = "drop")
+
+outlier_summary_CD <- outlier_table_CD %>%
+  dplyr::group_by(roi_code, roi) %>%
+  dplyr::summarise(
+    n_outliers = dplyr::n(),
+    subjects   = paste(subject, collapse = ", "),
+    values     = paste(value, collapse = ", "),
+    lower      = dplyr::first(lower),
+    upper      = dplyr::first(upper),
+    mean       = dplyr::first(mean),
+    median     = dplyr::first(median),
+    .groups    = "drop"
+  ) %>%
+  dplyr::arrange(dplyr::desc(n_outliers))
+
+outlier_summary_CD <- outlier_summary_CD %>%
+  left_join(roi_totals_cd, by = "roi") %>%
+  mutate(
+    perc_out = 100 * n_outliers / total_n,
+    label_text = paste0(n_outliers, " (", round(perc_out, 1), "%)")
+  )
+```
+
+### Figure S6: number of outliers per ROI (CP)
+
+```{r}
+p_cp_outlier_counts <- ggplot(outlier_summary, aes(x = reorder(roi, n_outliers), y = n_outliers, fill = n_outliers)) +
+  geom_col() +
+  geom_text(aes(label = label_text), 
+            hjust = -0.2, size = 3.5) +
+  scale_fill_viridis_c(option = "rocket", direction = -1) +
+  coord_flip() +
+  theme_classic(base_size = 12) +
+  labs(
+    x = "ROI",
+    y = "Number of outliers (IQR rule)",
+    title = "Outlier counts per ROI (CP)",
+    fill = "N outliers"
+  ) +
+  expand_limits(y = max(outlier_summary$n_outliers) * 1.15)
+
+save_plot_png(p_cp_outlier_counts, "Outlier_counts_per_ROI")
+```
+
+### Datasets with outliers excluded
+
+```{r}
+final_dat_CP_excl <- final_dat_CP
+
+for (i in seq_len(nrow(cp_stats))) {
+  roi_var <- cp_stats$roi_code[i]
+  lower   <- cp_stats$lower[i]
+  upper   <- cp_stats$upper[i]
+  
+  final_dat_CP_excl[[roi_var]] <- ifelse(
+    final_dat_CP_excl[[roi_var]] < lower | final_dat_CP_excl[[roi_var]] > upper,
+    NA,
+    final_dat_CP_excl[[roi_var]]
+  )
+}
+```
+
+```{r}
+final_dat_CD_excl <- final_dat_CD
+
+for (i in seq_len(nrow(cd_stats))) {
+  roi_var <- cd_stats$roi_code[i]
+  lower   <- cd_stats$lower[i]
+  upper   <- cd_stats$upper[i]
+  
+  final_dat_CD_excl[[roi_var]] <- ifelse(
+    final_dat_CD_excl[[roi_var]] < lower | final_dat_CD_excl[[roi_var]] > upper,
+    NA,
+    final_dat_CD_excl[[roi_var]]
+  )
+}
+```
+
+# Intraventricular hemorrhage (IVH)
+
+```{r}
+dat_icb <- final_dat_CP %>%
+  mutate(
+    icb_raw = as.numeric(as.character(hemo)),
+    icb_fac = factor(icb_raw, levels = 0:4,
+                     labels = c("0","Stage 1","Stage 2","Stage 3", "Stage 4"))
+  )
+
+table(dat_icb$icb_fac, dat_icb$group, useNA="ifany")
+```
+
+### Association between IVH grade and CP (per ROI)
+
+```{r}
+cp_vars <- names(final_dat_CP) %>% grep("^cp_", ., value = TRUE)
+
+fit_one <- function(var, data = dat_icb) {
+  f <- as.formula(paste(var, "~ icb_raw + group + sex + age_at_scan"))
+  m <- lm(f, data = data)
+  broom::tidy(m) %>% mutate(roi_code = var)
+}
+
+cp_results <- map_dfr(cp_vars, fit_one) %>%
+  filter(term == "icb_raw") %>%
+  mutate(p_adj = p.adjust(p.value, method = "fdr")) %>%
+  arrange(p_adj)
+
+cp_results %>% dplyr::select(roi_code, estimate, std.error, statistic, p.value, p_adj) %>% print(n = Inf)
+```
+
+### Overlap of IVH and outliers
+
+```{r}
+outlier_CP <- outlier_table    %>% distinct(subject) %>% mutate(metric = "CP")
+outlier_CD <- outlier_table_CD %>% distinct(subject) %>% mutate(metric = "CD")
+
+outlier_subjects_split <- full_join(outlier_CP, outlier_CD, by = "subject", suffix = c("_cp","_cd")) %>%
+  mutate(
+    outlier_group = case_when(
+      !is.na(metric_cp) & is.na(metric_cd) ~ "CP only",
+      is.na(metric_cp) & !is.na(metric_cd) ~ "CD only",
+      !is.na(metric_cp) & !is.na(metric_cd) ~ "Both",
+      TRUE ~ NA_character_
+    )
+  )
+
+icb_subjects <- dat_icb %>%
+  filter(!is.na(icb_raw) & icb_raw > 0) %>%
+  distinct(subject)
+
+outlier_subjects_split <- outlier_subjects_split %>%
+  mutate(
+    ICB = if_else(subject %in% icb_subjects$subject, "Yes", "No")
+  )
+
+summary_table <- outlier_subjects_split %>%
+  count(outlier_group, ICB) %>%
+  tidyr::pivot_wider(names_from = ICB, values_from = n, values_fill = 0) %>%
+  mutate(Total = Yes + No)
+
+summary_table
+```
+
+# Save checkpoint
+
+```{r}
+dir.create(here::here("checkpoints"), showWarnings = FALSE)
+
+saveRDS(
+  list(
+    final_dat_CP      = final_dat_CP,
+    final_dat_CD      = final_dat_CD,
+    final_dat_CP_excl = final_dat_CP_excl,
+    final_dat_CD_excl = final_dat_CD_excl,
+    outlier_table     = outlier_table,
+    outlier_summary   = outlier_summary,
+    roi_labels        = roi_labels,
+    roi_labels_CD     = roi_labels_CD
+  ),
+  here::here("checkpoints", "eda_checkpoint.rds")
+)
+```

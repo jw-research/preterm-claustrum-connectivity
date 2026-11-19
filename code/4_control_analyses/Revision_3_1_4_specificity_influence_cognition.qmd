@@ -1,0 +1,481 @@
+---
+title: "Claustrum Connectivity in Prematurity Specificity and Influence of CP-Cognition Associations"
+author: "Jil Wendt"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+Specificity and influence analyses for the FDR-significant associations between CP and cognition in preterm-born participants (Supplementary control and robustness analyses, section 5): ANT orienting and CP to right primary motor cortex (BLS adults); Bayley-III cognition and CP to left parietal associative cortex and right hippocampus (dHCP neonates). For each association: group x CP interaction in the full cohort (FDR across ROIs within outcome), leverage, Cook's distance and DFBETAS, re-fit after excluding participants with Cook's distance \> 4/n, leave-one-out analysis, and partial regression plots.
+
+- Input: `data/adults_harmonized.csv`, `data/dHCP_CP_cog_ses.csv`
+- Outputs:
+  - `outputs/tables/Revision_interaction_influence_LOO_cognition_<date>.csv`: Tables S25 and S26 (results/interaction_influence_LOO_cognition.csv)
+  - `outputs/figures/Revision314_partial_regression_all_<date>.png`: Supplementary Figure S9
+
+# 1 Setup
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(here)
+library(emmeans)
+library(broom)
+
+# --- Set-up output saving ---
+fig_dir <- here::here("outputs", "figures")
+tab_dir <- here::here("outputs", "tables")
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(tab_dir, recursive = TRUE, showWarnings = FALSE)
+
+options(contrasts = c("contr.sum", "contr.poly"))
+```
+
+### Lookup Tables for Variable Names
+
+```{r}
+# BLS (adults)
+roi_labels <- c(
+  cp_ac_occ_l_ipsi  = "Occipital Associative (L)",
+  cp_ac_occ_r_ipsi  = "Occipital Associative (R)",
+  cp_ac_par_l_ipsi  = "Parietal Associative (L)",
+  cp_ac_par_r_ipsi  = "Parietal Associative (R)",
+  cp_ac_pfc_l_ipsi  = "Prefrontal Associative (L)",
+  cp_ac_pfc_r_ipsi  = "Prefrontal Associative (R)",
+  cp_ac_temp_l_ipsi = "Temporal Associative (L)",
+  cp_ac_temp_r_ipsi = "Temporal Associative (R)",
+  cp_c_pos_l_ipsi   = "Posterior Cingulate (L)",
+  cp_c_pos_r_ipsi   = "Posterior Cingulate (R)",
+  cp_c_ant_l_ipsi   = "Anterior Cingulate (L)",
+  cp_c_ant_r_ipsi   = "Anterior Cingulate (R)",
+  cp_pc_aud_l_ipsi  = "Primary Auditory (L)",
+  cp_pc_aud_r_ipsi  = "Primary Auditory (R)",
+  cp_pc_mot_l_ipsi  = "Primary Motor (L)",
+  cp_pc_mot_r_ipsi  = "Primary Motor (R)",
+  cp_pc_sens_l_ipsi = "Primary Somatosensory (L)",
+  cp_pc_sens_r_ipsi = "Primary Somatosensory (R)",
+  cp_pc_vis_l_ipsi  = "Primary Visual (L)",
+  cp_pc_vis_r_ipsi  = "Primary Visual (R)",
+  cp_sc_hip_l_ipsi  = "Hippocampus (L)",
+  cp_ac_hip_r_ipsi  = "Hippocampus (R)"
+)
+
+# dHCP (neonates)
+roi_labels_dHCP <- c(
+  l_claustrum_ac_occ_l  = "Occipital Associative (L)",
+  r_claustrum_ac_occ_r  = "Occipital Associative (R)",
+  l_claustrum_ac_par_l  = "Parietal Associative (L)",
+  r_claustrum_ac_par_r  = "Parietal Associative (R)",
+  l_claustrum_ac_pfc_l  = "Prefrontal Associative (L)",
+  r_claustrum_ac_pfc_r  = "Prefrontal Associative (R)",
+  l_claustrum_ac_temp_l = "Temporal Associative (L)",
+  r_claustrum_ac_temp_r = "Temporal Associative (R)",
+  l_claustrum_c_pos_l   = "Posterior Cingulate (L)",
+  r_claustrum_c_pos_r   = "Posterior Cingulate (R)",
+  l_claustrum_c_ant_l   = "Anterior Cingulate (L)",
+  r_claustrum_c_ant_r   = "Anterior Cingulate (R)",
+  l_claustrum_pc_aud_l  = "Primary Auditory (L)",
+  r_claustrum_pc_aud_r  = "Primary Auditory (R)",
+  l_claustrum_pc_mot_l  = "Primary Motor (L)",
+  r_claustrum_pc_mot_r  = "Primary Motor (R)",
+  l_claustrum_pc_sens_l = "Primary Somatosensory (L)",
+  r_claustrum_pc_sens_r = "Primary Somatosensory (R)",
+  l_claustrum_pc_vis_l  = "Primary Visual (L)",
+  r_claustrum_pc_vis_r  = "Primary Visual (R)",
+  l_claustrum_sc_hip_l  = "Hippocampus (L)",
+  r_claustrum_sc_hip_r  = "Hippocampus (R)"
+)
+
+outcome_labels <- c(
+  wie_gesiq          = "FSIQ",
+  ant_alerting       = "ANT alerting",
+  ant_orienting      = "ANT orienting",
+  ant_congruency     = "ANT congruency",
+  bsid_cog_composite = "Bayley-III cognition"
+)
+
+lbl <- function(x) {
+  all_labels <- c(roi_labels, roi_labels_dHCP, outcome_labels)
+  unname(ifelse(x %in% names(all_labels), all_labels[x], x))
+}
+```
+
+## Load data BLS (adults)
+
+```{r}
+# --- Load data ---
+dat <- read_delim(
+  here("data", "adults_harmonized.csv"),
+  delim = ";",
+  trim_ws = TRUE,
+  locale = locale(decimal_mark = ","),
+  na = c(""," ","NA", "NaN", "n/a", "."),
+  col_types = cols(
+    Subject = col_character(),
+    ID      = col_character()
+  ),
+  guess_max = 10000
+) |> janitor::clean_names()
+
+# --- recode and name important factors ---
+dat <- dat %>%
+  mutate(
+    group = factor(case_when(
+      groupcode == 0 ~ "FT",
+      groupcode == 1 ~ "PT",
+      TRUE ~ NA_character_
+    ), levels = c("FT", "PT")),
+    
+    sex = factor(case_when(
+      sex == 1 ~ "Male",
+      sex == 2 ~ "Female",
+      TRUE ~ NA_character_
+    ), levels = c("Female", "Male"))
+  )
+```
+
+### Adjust data and create subsets
+
+```{r}
+drop_vars <- c("id")
+
+final_dat_CP <- dat %>%
+  dplyr::select(-starts_with("cd_"), -all_of(drop_vars))
+
+cp_vars <- grep("^cp_", names(final_dat_CP), value = TRUE)
+cog_all <- c("wie_gesiq", "ant_alerting", "ant_orienting", "ant_congruency")
+covars  <- c("age_at_scan", "sex")
+
+# --- full sample (PT + FT), CP standardized with PT mean/SD ---
+dat_BLS_full <- final_dat_CP %>%
+  dplyr::mutate(
+    dplyr::across(dplyr::all_of(c(cp_vars, cog_all)), ~ {
+      if (is.factor(.)) suppressWarnings(as.numeric(as.character(.))) else as.numeric(.)
+    }),
+    dplyr::across(dplyr::all_of(cp_vars),
+                  ~ (.x - mean(.x[group == "PT"], na.rm = TRUE)) / sd(.x[group == "PT"], na.rm = TRUE))
+  )
+
+# --- checks ---
+stopifnot(!anyDuplicated(dat_BLS_full$subject))
+```
+
+## Load data dHCP (neonates)
+
+```{r}
+# --- Load data ---
+dat_dHCP <- read_delim(
+  here("data", "dHCP_CP_cog_ses.csv"),
+  delim = ",",
+  trim_ws = TRUE,
+  locale = locale(decimal_mark = "."),
+  na = c(""," ","NA", "NaN", "n/a", "."),
+  col_types = cols(
+    Subject_ID = col_character(),
+    Session_ID = col_character()
+  ),
+  guess_max = 10000
+) |> janitor::clean_names()
+
+# --- recode and name important factors ---
+dat_dHCP <- dat_dHCP %>%
+  mutate(
+    group = factor(case_when(
+      group == "term" ~ "FT",
+      group == "pre" ~ "PT",
+      TRUE ~ NA_character_
+    ), levels = c("FT", "PT")),
+  )
+```
+
+### Adjust data and create subsets
+
+```{r}
+cp_vars_dHCP <- grep("^l_|^r_", names(dat_dHCP), value = TRUE)
+covars_dHCP  <- c("scan_age", "sex")
+cog_dHCP     <- "bsid_cog_composite"
+
+stopifnot(length(cp_vars_dHCP) == 22, all(c(covars_dHCP, cog_dHCP) %in% names(dat_dHCP)))
+
+dat_dHCP_full <- dat_dHCP %>%
+  dplyr::mutate(
+    dplyr::across(dplyr::all_of(c(cp_vars_dHCP, cog_dHCP)), ~ {
+      if (is.factor(.)) suppressWarnings(as.numeric(as.character(.))) else as.numeric(.)
+    }),
+    sex     = if (is.character(sex)) factor(sex) else sex,
+    subject = subject_id
+  ) %>%
+  dplyr::filter(!is.na(group))
+
+# --- checks ---
+stopifnot(!anyDuplicated(dat_dHCP_full$subject))
+```
+
+## Original findings to reproduce
+
+```{r}
+targets_BLS <- tribble(
+  ~outcome,        ~cp,                ~orig_beta, ~orig_t, ~orig_p_fdr,
+  "ant_orienting", "cp_pc_mot_r_ipsi", 11.763,     4.34,    0.001
+)
+
+targets_dHCP <- tribble(
+  ~outcome,             ~cp,                    ~orig_beta, ~orig_t, ~orig_p_fdr,
+  "bsid_cog_composite", "l_claustrum_ac_par_l", 109.215,    3.14,    0.043,
+  "bsid_cog_composite", "r_claustrum_sc_hip_r", 4736.772,   3.01,    0.043
+)
+
+add_ids <- function(targets) {
+  targets %>%
+    mutate(target_id = paste(outcome, cp, sep = "__"),
+           label     = paste0(lbl(outcome), " ~ CP ", lbl(cp)))
+}
+targets_BLS  <- add_ids(targets_BLS)
+targets_dHCP <- add_ids(targets_dHCP)
+```
+
+# 2 Analysis
+
+### Helper functions
+
+```{r}
+fit_family <- function(data, outcome, target_cp, family_cps, covars, min_n = 10) {
+  purrr::map_dfr(family_cps, function(cp) {
+    fml <- as.formula(paste(outcome, "~", paste(c(cp, covars), collapse = " + ")))
+    df  <- tidyr::drop_na(data[, all.vars(fml)])
+    if (nrow(df) < min_n) return(NULL)
+    broom::tidy(lm(fml, data = df), conf.int = TRUE) %>%
+      dplyr::filter(term == cp) %>%
+      dplyr::mutate(conf.low  = estimate - 1.96 * std.error,
+                    conf.high = estimate + 1.96 * std.error) %>%
+      dplyr::mutate(n = nrow(df))
+  }) %>%
+    dplyr::mutate(p_fdr = p.adjust(p.value, method = "fdr")) %>%
+    dplyr::filter(term == target_cp)
+}
+
+fit_within <- function(data, outcome, cp, covars) {
+  fml <- as.formula(paste(outcome, "~", paste(c(cp, covars), collapse = " + ")))
+  df  <- tidyr::drop_na(data[, c("subject", all.vars(fml))])
+  list(fit = lm(fml, data = df), df = df)
+}
+
+# Leverage and influence per participant
+influence_table <- function(fit, df, cp) {
+  n <- nobs(fit)
+  k <- length(coef(fit))
+  tibble(
+    subject    = df$subject,
+    leverage   = hatvalues(fit),
+    cooks_d    = cooks.distance(fit),
+    dfbetas_cp = dfbetas(fit)[, cp]
+  ) %>%
+    mutate(
+      flag_leverage = leverage   > 2 * k / n,
+      flag_cooks    = cooks_d    > 4 / n,
+      flag_dfbetas  = abs(dfbetas_cp) > 2 / sqrt(n)
+    )
+}
+
+# Leave-one-out
+loo_family <- function(data, df_target, outcome, target_cp, family_cps, covars, min_n = 10) {
+  purrr::map_dfr(df_target$subject, function(id) {
+    fit_family(dplyr::filter(data, subject != id), outcome, target_cp, family_cps, covars, min_n) %>%
+      dplyr::mutate(dropped = id, .before = 1)
+  })
+}
+
+# Group x CP interaction in the full sample
+fit_interaction <- function(data, outcome, cp, covars) {
+  fml <- as.formula(paste(outcome, "~", paste(c(paste("group *", cp), covars), collapse = " + ")))
+  df  <- tidyr::drop_na(data[, c("subject", all.vars(fml))])
+  fit <- lm(fml, data = df)
+  
+  tr     <- emmeans::emtrends(fit, ~ group, var = cp)
+  slopes <- as.data.frame(summary(tr, infer = TRUE)) %>%
+    dplyr::rename(slope = dplyr::ends_with(".trend")) %>%
+    dplyr::mutate(lower.CL = slope - 1.96 * SE, upper.CL = slope + 1.96 * SE)
+  diff   <- as.data.frame(summary(pairs(tr, reverse = TRUE), infer = TRUE)) %>%   # PT - FT
+    dplyr::mutate(lower.CL = estimate - 1.96 * SE, upper.CL = estimate + 1.96 * SE)
+  
+  list(fit = fit, df = df, slopes = slopes, diff = diff, n_by_group = table(df$group))
+}
+```
+
+#### Wrapper to run all steps
+
+```{r}
+run_followup <- function(data_full, targets, family_cps, covars, min_n = 10) {
+  data_PT <- dplyr::filter(data_full, group == "PT")
+  ids     <- targets$target_id
+  
+  # reproduce within-PT result
+  repro <- targets %>%
+    mutate(res = purrr::map2(outcome, cp, ~ fit_family(data_PT, .x, .y, family_cps, covars, min_n))) %>%
+    tidyr::unnest(res)
+  
+  # group x CP interaction (full sample)
+  interactions <- purrr::map2(targets$outcome, targets$cp,
+                              ~ fit_interaction(data_full, .x, .y, covars)) %>% purrr::set_names(ids)
+  
+  # leverage / influence (within PT)
+  within <- purrr::map2(targets$outcome, targets$cp,
+                        ~ fit_within(data_PT, .x, .y, covars)) %>% purrr::set_names(ids)
+  infl   <- purrr::map2(within, targets$cp, ~ influence_table(.x$fit, .x$df, .y)) %>% purrr::set_names(ids)
+  
+  excl_cooks <- purrr::pmap_dfr(list(targets$outcome, targets$cp, infl, ids), function(outcome, cp, inf, id) {
+    drop_ids <- inf$subject[inf$flag_cooks]
+    fit_family(dplyr::filter(data_PT, !subject %in% drop_ids), outcome, cp, family_cps, covars, min_n) %>%
+      dplyr::mutate(target_id = id, n_removed = length(drop_ids), .before = 1)
+  })
+  
+  # leave-one-out (within PT)
+  loo <- purrr::pmap(list(within, targets$outcome, targets$cp),
+                     ~ loo_family(data_PT, ..1$df, ..2, ..3, family_cps, covars, min_n)) %>%
+    purrr::set_names(ids)
+  
+  loo_summary <- purrr::imap_dfr(loo, ~ tibble(
+    target_id        = .y,
+    n_fits           = nrow(.x),
+    beta_min         = min(.x$estimate),
+    beta_max         = max(.x$estimate),
+    p_max            = max(.x$p.value),
+    p_fdr_max        = max(.x$p_fdr),
+    n_fdr_sig        = sum(.x$p_fdr < 0.05),
+    n_p_sig = sum(.x$p.value < 0.05),
+    most_influential = .x$dropped[which.max(.x$p.value)]
+  ))
+  
+  list(repro = repro, interactions = interactions, within = within, infl = infl,
+       excl_cooks = excl_cooks, loo = loo, loo_summary = loo_summary, targets = targets)
+}
+```
+
+#### Summary table helper
+
+```{r}
+fmt_ci <- function(est, lo, hi, d = 3) sprintf(paste0("%.", d, "f [%.", d, "f, %.", d, "f]"), est, lo, hi)
+
+summarise_followup <- function(res, cohort, ix_fdr = NULL) {
+  res$targets %>%
+    dplyr::select(target_id, label) %>%
+    dplyr::mutate(Cohort = cohort, .before = 1) %>%
+    dplyr::left_join(res$repro %>% dplyr::transmute(target_id,
+                                                    `PT only: beta [95% CI]` = fmt_ci(estimate, conf.low, conf.high),
+                                                    `PT only: t`             = round(statistic, 2),
+                                                    `PT only: pFDR`          = signif(p_fdr, 4),
+                                                    `PT only: N`             = n), by = "target_id") %>%
+    dplyr::left_join(res$excl_cooks %>% dplyr::transmute(target_id,
+                                                         `Cook's excl.: n removed`       = n_removed,
+                                                         `Cook's excl.: beta [95% CI]`   = fmt_ci(estimate, conf.low, conf.high),
+                                                         `Cook's excl.: pFDR`            = signif(p_fdr, 4)), by = "target_id") %>%
+    dplyr::left_join(res$loo_summary %>% dplyr::transmute(target_id,
+                                                          `LOO: beta range`     = sprintf("%.3f to %.3f", beta_min, beta_max),
+                                                          `LOO: max pFDR`       = signif(p_fdr_max, 4),
+                                                          `LOO: P < 0.05 fits` = paste0(n_p_sig, "/", n_fits),
+                                                          `LOO: FDR-sig. fits`  = paste0(n_fdr_sig, "/", n_fits)), by = "target_id") %>%
+    dplyr::left_join(purrr::imap_dfr(res$interactions, function(ix, id) {
+      s <- ix$slopes; d <- ix$diff
+      tibble(target_id = id,
+             `Slope PT [95% CI]` = fmt_ci(s$slope[s$group == "PT"], s$lower.CL[s$group == "PT"], s$upper.CL[s$group == "PT"]),
+             `Slope FT [95% CI]` = fmt_ci(s$slope[s$group == "FT"], s$lower.CL[s$group == "FT"], s$upper.CL[s$group == "FT"]),
+             `Interaction: slope diff. PT-FT [95% CI]` = fmt_ci(d$estimate, d$lower.CL, d$upper.CL),
+             `Interaction: t(df)` = sprintf("%.2f (%d)", d$t.ratio, as.integer(d$df)),
+             `Interaction: p`     = signif(d$p.value, 4),
+             `N (PT/FT)`          = paste0(ix$n_by_group["PT"], "/", ix$n_by_group["FT"]))
+    }), by = "target_id") %>%
+    { if (!is.null(ix_fdr)) dplyr::left_join(., ix_fdr, by = "target_id") else . } %>%
+    { if (!is.null(ix_fdr)) dplyr::relocate(., `Interaction: pFDR`, .after = `Interaction: p`) else . } %>%
+    dplyr::select(-target_id)
+}
+```
+
+## A BLS (adults) results
+
+```{r}
+res_BLS <- run_followup(
+  data_full  = dat_BLS_full,
+  targets    = targets_BLS,
+  family_cps = cp_vars,
+  covars     = covars,
+  min_n      = 10
+)
+```
+
+### Reproduction
+
+```{r}
+stopifnot(all(abs(res_BLS$repro$estimate - res_BLS$repro$orig_beta) < 0.01))
+```
+
+## B dHCP (neonates) results
+
+```{r}
+res_dHCP <- run_followup(
+  data_full  = dat_dHCP_full,
+  targets    = targets_dHCP,
+  family_cps = cp_vars_dHCP,
+  covars     = covars_dHCP,
+  min_n      = 8
+)
+```
+
+### Reproduction
+
+```{r}
+stopifnot(all(abs(res_dHCP$repro$estimate - res_dHCP$repro$orig_beta) < 0.01))
+```
+
+# 3 Summary table
+
+```{r}
+grid_ix <- function(data, outcomes, cps, covars) {
+  tidyr::expand_grid(outcome = outcomes, cp = cps) %>%
+    mutate(diff = purrr::map2(outcome, cp, ~ fit_interaction(data, .x, .y, covars)$diff)) %>%
+    tidyr::unnest(diff) %>%
+    group_by(outcome) %>%
+    mutate(p_fdr = p.adjust(p.value, method = "fdr")) %>%
+    ungroup()
+}
+grid_dHCP <- grid_ix(dat_dHCP_full, unique(targets_dHCP$outcome), cp_vars_dHCP, covars_dHCP)
+grid_BLS  <- grid_ix(dat_BLS_full,  unique(targets_BLS$outcome),  cp_vars,      covars)
+
+ix_fdr <- dplyr::bind_rows(grid_BLS, grid_dHCP) %>%
+  dplyr::transmute(target_id = paste(outcome, cp, sep = "__"),
+                   `Interaction: pFDR` = round(p_fdr, 3))
+
+summary_3.1.4 <- dplyr::bind_rows(
+  summarise_followup(res_BLS,  "BLS (adults)",    ix_fdr),
+  summarise_followup(res_dHCP, "dHCP (neonates)", ix_fdr)
+)
+
+outfile <- file.path(tab_dir, paste0("Revision_interaction_influence_LOO_cognition_", format(Sys.Date()), ".csv"))
+readr::write_csv2(summary_3.1.4, outfile)
+message("Saved: ", outfile)
+```
+
+# 4 Partial regression plots (Figure S9)
+
+```{r}
+plot_av <- function(res, panel_letters = NULL) {
+  for (i in seq_len(nrow(res$targets))) {
+    id <- res$targets$target_id[i]; cp <- res$targets$cp[i]; w <- res$within[[id]]
+    car::avPlot(w$fit, variable = cp, id = FALSE, main = res$targets$label[i],
+                xlab = paste0("Adjusted CP ", lbl(cp)),
+                ylab = paste0("Adjusted ", lbl(res$targets$outcome[i])))
+    if (!is.null(panel_letters))
+      mtext(panel_letters[i], side = 3, line = 1.5, adj = 0,
+            at = par("usr")[1] - 0.12 * diff(par("usr")[1:2]), font = 2, cex = 1.5)
+  }
+}
+
+png(file.path(fig_dir, paste0("Revision314_partial_regression_all_", Sys.Date(), ".png")),
+    width = 15, height = 5, units = "in", res = 300)
+par(mfrow = c(1, 3))
+plot_av(res_dHCP, panel_letters = c("A", "B"))
+plot_av(res_BLS,  panel_letters = "C")
+dev.off()
+```

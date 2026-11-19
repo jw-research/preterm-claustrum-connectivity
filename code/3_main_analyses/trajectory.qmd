@@ -1,0 +1,170 @@
+---
+title: "Claustrum in Prematurity Trajectory"
+author: "Jil Wendt"
+format:
+  html:
+    toc: false
+    code-fold: true
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+Figure 3: covariate-adjusted Cohen's d (FT - PT) with 95% CI per target ROI in neonates and adults.
+
+- Input: `data/Figure3_input_adjusted_d.csv` (from `Revision_adjusted_effect_sizes.qmd`)
+- Outputs (`outputs/figures`): `Revision_effect_size_longitudinal_CI2_ADJ<date>.png`, `Revision_effect_size_longitudinal_CI2_ADJ_doublecol_<date>.tif` (Figure 3)
+
+```{r}
+#| label: setup
+#| include: false
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(forcats)
+library(readr)
+library(janitor)
+library(here)
+
+data_path <- here::here("data", "Figure3_input_adjusted_d.csv")
+alpha     <- 0.05
+type_levels <- c("Associative","Primary","Limbic")
+```
+
+```{r}
+read_effect_csv <- function(path){
+  first <- readLines(path, n = 1, warn = FALSE)
+  delim <- if (grepl(";", first)) ";" else if (grepl("\t", first)) "\t" else ","
+  d <- readr::read_delim(path, delim = delim, show_col_types = FALSE, trim_ws = TRUE)
+  names(d) <- sub("^\\ufeff", "", names(d))
+  names(d) <- trimws(names(d))
+  d
+}
+
+df <- read_effect_csv(data_path)
+
+required <- c("ROI","ROI_order","Type","BLS_d","BLS_p_FDR","dHCP_d","dHCP_p_FDR")
+present  <- names(df)
+missing  <- setdiff(required, present)
+
+if (length(missing)) {
+  stop(paste0(
+    "These required columns were not found: ",
+    paste(missing, collapse = ", "),
+    "\nHeaders present: ",
+    paste(present, collapse = ", ")
+  ))
+}
+
+get_col <- function(d, nm) if (nm %in% names(d)) d[[nm]] else rep(NA_real_, nrow(d))
+
+to_num <- function(x) {
+  if (is.numeric(x)) return(x)
+  x <- as.character(x)
+  use_comma <- sum(grepl(",", x, fixed = TRUE), na.rm = TRUE) >
+               sum(grepl("\\.", x), na.rm = TRUE)
+  readr::parse_number(x, locale = readr::locale(decimal_mark = if (use_comma) "," else "."))
+}
+
+num_cols <- c("ROI_order","BLS_d","BLS_p_FDR","BLS_ci_low","BLS_ci_high",
+              "dHCP_d","dHCP_p_FDR","dHCP_ci_low","dHCP_ci_high")
+num_cols <- intersect(num_cols, names(df))
+
+df <- df |>
+  mutate(across(all_of(num_cols), to_num))
+```
+
+```{r}
+#| label: to-long-format
+
+adults <- tibble(
+  roi       = df$ROI,
+  roi_order = df$ROI_order,
+  type      = df$Type,
+  cohort    = "Adults",
+  cohen_d   = df$BLS_d,
+  p         = df$BLS_p_FDR,
+  ci_low    = get_col(df, "BLS_ci_low"),
+  ci_high   = get_col(df, "BLS_ci_high")
+)
+
+neonates <- tibble(
+  roi       = df$ROI,
+  roi_order = df$ROI_order,
+  type      = df$Type,
+  cohort    = "Neonates",
+  cohen_d   = df$dHCP_d,
+  p         = df$dHCP_p_FDR,
+  ci_low    = get_col(df, "dHCP_ci_low"),
+  ci_high   = get_col(df, "dHCP_ci_high")
+)
+
+long <- bind_rows(adults, neonates) |>
+  mutate(
+    type = factor(type, levels = type_levels),
+    sig  = if_else(p < alpha, "pFDR < 0.05", "NS"),
+    roi  = fct_reorder(roi, roi_order, .desc = FALSE)
+  )
+
+long <- long %>%
+  mutate(label = if ("ROI_label" %in% names(df)) df$ROI_label[match(roi, df$ROI)] else roi) %>%
+  mutate(label = forcats::fct_reorder(label, roi_order, .desc = FALSE))
+```
+
+### Make figure
+
+```{r}
+long <- long %>%
+  arrange(type, roi_order) %>%
+  mutate(label = factor(label, levels = unique(label)),
+         y_id  = as.integer(label))
+
+band_h <- 0.18
+
+p4 <- ggplot(long, aes(x = cohen_d, y = y_id)) +
+  geom_rect(
+    data = subset(long, !is.na(ci_low) & !is.na(ci_high)),
+    aes(xmin = ci_low, xmax = ci_high,
+        ymin = y_id - band_h, ymax = y_id + band_h, fill = cohort),
+    alpha = 0.2, color = NA, inherit.aes = FALSE, show.legend = FALSE
+  ) +
+  geom_line(aes(group = roi), color = "gray70") +
+  geom_point(aes(color = cohort, shape = sig), size = 4) +
+  scale_fill_manual(values = c("Adults" = "#399AB5", "Neonates" = "#E06B0A")) +
+  scale_color_manual(values = c("Adults" = "#399AB5", "Neonates" = "#E06B0A")) +
+  scale_shape_manual(values = c("pFDR < 0.05" = 16, "NS" = 1)) +
+  scale_y_continuous(
+    breaks = sort(unique(long$y_id)),
+    labels = levels(long$label),
+    expand = expansion(mult = c(0.02, 0.02))
+  ) +
+  facet_grid(type ~ ., scales = "free_y", space = "free") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  coord_cartesian(xlim = c(-1, 1)) +
+  theme_light(base_size = 14) +
+  theme(axis.text.y = element_text(size = 11, lineheight = 0.95)) +
+  labs(
+    x = "Cohen's d (FT vs PT)",
+    y = "Region of Interest",
+    color = "Cohort",
+    shape = paste0("Significance")
+  )
+```
+
+```{r}
+outfile4 <- file.path(here::here("outputs","figures"),
+                     paste0("Revision_effect_size_longitudinal_CI2_ADJ", format(Sys.Date()), ".png"))
+ggsave(outfile4, plot = p4, width = 9, height = 7, dpi = 300)
+```
+
+### Save as TIFF (double column)
+
+```{r}
+outfile4_double <- file.path(here::here("outputs","figures"),
+                     paste0("Revision_effect_size_longitudinal_CI2_ADJ_doublecol_",
+                            format(Sys.Date()), ".tif"))
+ggsave(outfile4_double, plot = p4,
+       width = 185, height = 144, units = "mm", dpi = 300,
+       device = "tiff", compression = "lzw")
+```

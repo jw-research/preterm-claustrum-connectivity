@@ -1,0 +1,320 @@
+---
+title: "Claustrum Connectivity in Prematurity Group Comparison analyses"
+author: "Jil Wendt"
+format: html
+editor: visual
+editor_options:
+  chunk_output_type: console
+---
+
+Group comparisons of claustrum connectivity between preterm- (VP/VLBW) and full-term-born adults (BLS cohort). ANCOVA per target ROI (connectivity \~ group + age at scan + sex), FDR correction across the 22 target ROIs.
+
+- Input: `data/adults_harmonized.csv` (ComBat-harmonized CP and CD per target ROI, demographics)
+- Outputs (`outputs/tables`):
+  - `GroupComparison_CP_FTvsPT_TypeIII_NEW_<date>.csv`: CP, full sample (results/groupcomp_CP_ANCOVA_BLS.csv)
+  - `GroupComparison_CP_FTvsPT_TypeIII_noICB_NEW<date>.csv`: CP, participants with perinatal IVH excluded (results/groupcomp_CP_ANCOVA_BLS_IVH_excluded.csv)
+  - `GroupComparison_CP_FTvsPT_TypeIII_excl_NEW<date>.csv`: CP, outlier values excluded (results/groupcomp_CP_ANCOVA_BLS_outliers_excluded.csv)
+  - `GroupComparison_CD_FTvsPT_TypeIII_NEW<date>.csv`: CD, full sample (results/groupcomp_CD_ANCOVA_BLS.csv)
+
+# Setup
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(here)
+library(car)
+library(emmeans)
+
+tab_dir <- here::here("outputs", "tables")
+```
+
+#### Lookup Tables for Variable Names
+
+```{r}
+roi_labels <- c(
+  cp_ac_occ_l_ipsi  = "Occipital Associative (L)",
+  cp_ac_occ_r_ipsi  = "Occipital Associative (R)",
+  cp_ac_par_l_ipsi  = "Parietal Associative (L)",
+  cp_ac_par_r_ipsi  = "Parietal Associative (R)",
+  cp_ac_pfc_l_ipsi  = "Prefrontal Associative (L)",
+  cp_ac_pfc_r_ipsi  = "Prefrontal Associative (R)",
+  cp_ac_temp_l_ipsi = "Temporal Associative (L)",
+  cp_ac_temp_r_ipsi = "Temporal Associative (R)",
+  cp_c_pos_l_ipsi   = "Posterior Cingulate (L)",
+  cp_c_pos_r_ipsi   = "Posterior Cingulate (R)",
+  cp_c_ant_l_ipsi   = "Anterior Cingulate (L)",
+  cp_c_ant_r_ipsi   = "Anterior Cingulate (R)",
+  cp_pc_aud_l_ipsi  = "Primary Auditory (L)",
+  cp_pc_aud_r_ipsi  = "Primary Auditory (R)",
+  cp_pc_mot_l_ipsi  = "Primary Motor (L)",
+  cp_pc_mot_r_ipsi  = "Primary Motor (R)",
+  cp_pc_sens_l_ipsi = "Primary Somatosensory (L)",
+  cp_pc_sens_r_ipsi = "Primary Somatosensory (R)",
+  cp_pc_vis_l_ipsi  = "Primary Visual (L)",
+  cp_pc_vis_r_ipsi  = "Primary Visual (R)",
+  cp_sc_hip_l_ipsi  = "Hippocampus (L)",
+  cp_ac_hip_r_ipsi  = "Hippocampus (R)"
+)
+
+roi_labels_CD <- c(
+  cd_ac_occ_l_ipsi  = "Occipital Associative (L)",
+  cd_ac_occ_r_ipsi  = "Occipital Associative (R)",
+  cd_ac_par_l_ipsi  = "Parietal Associative (L)",
+  cd_ac_par_r_ipsi  = "Parietal Associative (R)",
+  cd_ac_pfc_l_ipsi  = "Prefrontal Associative (L)",
+  cd_ac_pfc_r_ipsi  = "Prefrontal Associative (R)",
+  cd_ac_temp_l_ipsi = "Temporal Associative (L)",
+  cd_ac_temp_r_ipsi = "Temporal Associative (R)",
+  cd_c_pos_l_ipsi   = "Posterior Cingulate (L)",
+  cd_c_pos_r_ipsi   = "Posterior Cingulate (R)",
+  cd_c_ant_l_ipsi   = "Anterior Cingulate (L)",
+  cd_c_ant_r_ipsi   = "Anterior Cingulate (R)",
+  cd_pc_aud_l_ipsi  = "Primary Auditory (L)",
+  cd_pc_aud_r_ipsi  = "Primary Auditory (R)",
+  cd_pc_mot_l_ipsi  = "Primary Motor (L)",
+  cd_pc_mot_r_ipsi  = "Primary Motor (R)",
+  cd_pc_sens_l_ipsi = "Primary Somatosensory (L)",
+  cd_pc_sens_r_ipsi = "Primary Somatosensory (R)",
+  cd_pc_vis_l_ipsi  = "Primary Visual (L)",
+  cd_pc_vis_r_ipsi  = "Primary Visual (R)",
+  cd_sc_hip_l_ipsi  = "Hippocampus (L)",
+  cd_ac_hip_r_ipsi  = "Hippocampus (R)"
+)
+```
+
+## Load data
+
+```{r}
+dat <- read_delim(
+  here("data", "adults_harmonized.csv"),
+  delim = ";",
+  trim_ws = TRUE,
+  locale = locale(decimal_mark = ","),
+  na = c(""," ","NA", "NaN", "n/a", ".", "-9999","999"),
+  col_types = cols(
+    Subject = col_character(),
+    ID      = col_character()
+  ),
+  guess_max = 10000
+) |> janitor::clean_names()
+
+dat <- dat %>%
+  mutate(
+    group = factor(case_when(
+      groupcode == 0 ~ "FT",
+      groupcode == 1 ~ "PT",
+      TRUE ~ NA_character_
+    ), levels = c("FT", "PT")),
+
+    sex = factor(case_when(
+      sex == 1 ~ "Male",
+      sex == 2 ~ "Female",
+      TRUE ~ NA_character_
+    ), levels = c("Female", "Male"))
+  )
+```
+
+## Create subsets
+
+```{r}
+drop_vars <- c("id")
+
+final_dat_CP <- dat %>%
+  dplyr::select(-starts_with("cd_"), -all_of(drop_vars))
+
+final_dat_CD <- dat %>%
+  dplyr::select(-starts_with("cp_"), -all_of(drop_vars))
+
+# control analysis: participants with perinatal IVH excluded
+final_dat_CP_noICB <- final_dat_CP %>%
+  dplyr::filter(is.na(hemo) | hemo == 0)
+```
+
+# Specific Setup
+
+```{r}
+# sum-to-zero contrasts for Type III tests
+options(contrasts = c("contr.sum", "contr.poly"))
+
+stopifnot(is.factor(final_dat_CP$group), is.factor(final_dat_CP$sex))
+```
+
+# ANCOVA function
+
+```{r}
+cp_vars <- grep("^cp_", names(final_dat_CP), value = TRUE)
+cd_vars <- grep("^cd_", names(final_dat_CD), value = TRUE)
+
+run_ancova <- function(dv, data, labels = roi_labels){
+  fml <- as.formula(paste(dv, "~ group + age_at_scan + sex"))
+  df  <- data[, all.vars(fml)] %>% na.omit()
+  if (nrow(df) < 20) return(NULL)
+
+  fit <- lm(fml, data = df)
+
+  # Type III ANOVA
+  a3  <- car::Anova(fit, type = 3)
+
+  a3_df <- as.data.frame(a3)
+  a3_df$Term <- rownames(a3_df)
+
+  ss_group <- a3_df$`Sum Sq`[a3_df$Term == "group"]
+  df_group <- a3_df$Df[a3_df$Term == "group"]
+  Fval     <- a3_df$`F value`[a3_df$Term == "group"]
+  pval     <- a3_df$`Pr(>F)`[a3_df$Term == "group"]
+
+  ss_res   <- a3_df$`Sum Sq`[a3_df$Term == "Residuals"]
+  df_res   <- a3_df$Df[a3_df$Term == "Residuals"]
+
+  partial_eta2 <- as.numeric(ss_group / (ss_group + ss_res))
+
+  # estimated marginal means and contrast (FT - PT)
+  emm   <- emmeans::emmeans(fit, ~ group)
+  comp  <- emmeans::contrast(emm, method = "pairwise") %>% summary(infer = TRUE)
+
+  emm_tbl <- as.data.frame(emm)
+  mean_FT <- emm_tbl$emmean[emm_tbl$group == "FT"]
+  mean_PT <- emm_tbl$emmean[emm_tbl$group == "PT"]
+  diff_FT_PT <- comp$estimate[1]
+
+  dir_lab <- if (pval < 0.05) {
+    if (diff_FT_PT > 0) "FT > PT" else "PT > FT"
+  } else {
+    if (diff_FT_PT > 0) "NS (FT > PT)" else "NS (PT > FT)"
+  }
+
+  f_str <- sprintf("F(1, %d) = %.2f, p = %s",
+                   df_res, Fval,
+                   ifelse(pval < .001, "< 0.001**",
+                          ifelse(pval < .01, sprintf("%.3f*", pval),
+                                 sprintf("%.3f", pval))))
+
+  tibble(
+    dv            = dv,
+    ROI           = dplyr::recode(dv, !!!labels, .default = dv),
+    N             = nrow(df),
+    F             = as.numeric(Fval),
+    df1           = as.numeric(df_group),
+    df2           = as.numeric(df_res),
+    p             = as.numeric(pval),
+    partial_eta2  = partial_eta2,
+    emmean_FT     = as.numeric(mean_FT),
+    emmean_PT     = as.numeric(mean_PT),
+    diff_FT_minus_PT = as.numeric(diff_FT_PT),
+    Direction     = dir_lab,
+    F_string      = f_str
+  )
+}
+```
+
+# ANCOVA CP, full sample
+
+```{r}
+res_group <- map_dfr(cp_vars, run_ancova, data = final_dat_CP)
+
+# FDR across ROIs
+res_group <- res_group %>%
+  mutate(p_FDR = p.adjust(p, method = "fdr")) %>%
+  arrange(p, p_FDR)
+
+outfile <- file.path(tab_dir, paste0("GroupComparison_CP_FTvsPT_TypeIII_NEW_", format(Sys.Date()), ".csv"))
+readr::write_csv2(res_group, outfile)
+message("Saved: ", outfile)
+```
+
+# Control analysis: participants with perinatal IVH excluded
+
+```{r}
+res_group_noICB <- map_dfr(cp_vars, run_ancova, data = final_dat_CP_noICB)
+
+# FDR across ROIs
+res_group_noICB <- res_group_noICB %>%
+  mutate(p_FDR = p.adjust(p, method = "fdr")) %>%
+  arrange(p, p_FDR)
+
+outfile <- file.path(tab_dir, paste0("GroupComparison_CP_FTvsPT_TypeIII_noICB_NEW", format(Sys.Date()), ".csv"))
+readr::write_csv2(res_group_noICB, outfile)
+message("Saved: ", outfile)
+```
+
+# Control analysis: outlier values excluded
+
+Single outlier values (outside 1.5 x IQR per ROI) are set to missing; no participants are removed entirely.
+
+```{r}
+if (!exists("long_cp")) {
+  long_cp <- final_dat_CP %>%
+    dplyr::select(subject, group, sex, age_at_scan, scanner_id, dplyr::starts_with("cp_")) %>%
+    tidyr::pivot_longer(dplyr::starts_with("cp_"),
+                        names_to = "roi_code", values_to = "connectivity") %>%
+    dplyr::mutate(roi = factor(roi_code, levels = names(roi_labels), labels = roi_labels))
+}
+
+stopifnot(all(c("subject","roi_code","roi","connectivity") %in% names(long_cp)))
+
+long_cp_outliers <- long_cp %>%
+  dplyr::select(subject, roi_code, roi, value = connectivity)
+
+cp_stats <- long_cp_outliers %>%
+  dplyr::group_by(roi_code, roi) %>%
+  dplyr::summarise(
+    q1     = stats::quantile(value, 0.25, na.rm = TRUE),
+    q3     = stats::quantile(value, 0.75, na.rm = TRUE),
+    iqr    = q3 - q1,
+    lower  = q1 - 1.5 * iqr,
+    upper  = q3 + 1.5 * iqr,
+    mean   = mean(value, na.rm = TRUE),
+    median = median(value, na.rm = TRUE),
+    n      = dplyr::n(),
+    .groups = "drop"
+  )
+```
+
+```{r}
+final_dat_CP_excl <- final_dat_CP
+
+for (i in seq_len(nrow(cp_stats))) {
+  roi_var <- cp_stats$roi_code[i]
+  lower   <- cp_stats$lower[i]
+  upper   <- cp_stats$upper[i]
+
+  final_dat_CP_excl[[roi_var]] <- ifelse(
+    final_dat_CP_excl[[roi_var]] < lower | final_dat_CP_excl[[roi_var]] > upper,
+    NA,
+    final_dat_CP_excl[[roi_var]]
+  )
+}
+
+# number of values set to missing
+sum(is.na(final_dat_CP_excl)) - sum(is.na(final_dat_CP))
+```
+
+```{r}
+res_group_excl <- map_dfr(cp_vars, run_ancova, data = final_dat_CP_excl)
+
+# FDR across ROIs
+res_group_excl <- res_group_excl %>%
+  mutate(p_FDR = p.adjust(p, method = "fdr")) %>%
+  arrange(p, p_FDR)
+
+outfile <- file.path(tab_dir, paste0("GroupComparison_CP_FTvsPT_TypeIII_excl_NEW", format(Sys.Date()), ".csv"))
+readr::write_csv2(res_group_excl, outfile)
+message("Saved: ", outfile)
+```
+
+# Control analysis: CD
+
+```{r}
+res_group_cd <- map_dfr(cd_vars, run_ancova, data = final_dat_CD, labels = roi_labels_CD)
+
+# FDR across ROIs
+res_group_cd <- res_group_cd %>%
+  mutate(p_FDR = p.adjust(p, method = "fdr")) %>%
+  arrange(p, p_FDR)
+
+outfile <- file.path(tab_dir, paste0("GroupComparison_CD_FTvsPT_TypeIII_NEW", format(Sys.Date()), ".csv"))
+readr::write_csv2(res_group_cd, outfile)
+message("Saved: ", outfile)
+```

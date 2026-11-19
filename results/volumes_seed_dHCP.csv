@@ -1,0 +1,7 @@
+﻿"Variable";"FT mean ± SD [range]";"PT mean ± SD [range]";"Mean difference (FT − PT)";"t(df)";"P"
+"Claustrum volume, structural space, L (mm³)";"317 ± 48 [206–438]";"359 ± 56 [216–518]";"-41";"-4.77(142)";"<.001"
+"Claustrum volume, structural space, R (mm³)";"332 ± 46 [235–432]";"365 ± 57 [189–514]";"-33";"-3.77(142)";"<.001"
+"Claustrum seed volume, diffusion space, L (mm³)";"316 ± 48 [205–447]";"359 ± 59 [218–529]";"-44";"-4.93(142)";"<.001"
+"Claustrum seed volume, diffusion space, R (mm³)";"331 ± 50 [232–455]";"362 ± 58 [179–504]";"-32";"-3.51(142)";"<.001"
+"Claustrum seed voxels, diffusion space, L";"153 ± 23 [100–217]";"175 ± 28 [106–257]";"-22";"-5.10(142)";"<.001"
+"Claustrum seed voxels, diffusion space, R";"160 ± 24 [113–221]";"176 ± 28 [87–245]";"-16";"-3.72(142)";"<.001"

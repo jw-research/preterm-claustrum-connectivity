@@ -1,0 +1,110 @@
+---
+title: "Claustrum Connectivity in Prematurity Figure Assembly"
+author: "Jil Wendt"
+format: html
+editor: visual
+---
+
+Combines the dHCP and BLS heatmap panels into the manuscript figures. Run `GLM_analyses_dHCP.qmd` and `GLM_analyses_essential.qmd` first.
+
+- Input: `outputs/figures/p_heat_*.rds` (from `GLM_analyses_dHCP.qmd` and `GLM_analyses_essential.qmd`)
+- Outputs (`outputs/figures`):
+  - `Figure3_prematurity_heatmaps_final.tiff`: Supplementary Figure S4
+  - `Figure5_earlyEnv_heatmaps_final.tiff`: Figure 4
+  - `Figure7_CP_to_cognition_heatmaps_final.tiff`: Figure 5
+
+```{r}
+library(ggplot2)
+library(patchwork)
+library(here)
+
+# ROIs with FDR-significant group differences in CP, marked in the heatmaps
+sig_roi_labels <- c(
+  "Occipital Associative (R)", "Occipital Associative (L)", "Parietal Associative (L)",
+  "Prefrontal Associative (L)", "Temporal Associative (L)", "Primary Motor (R)",
+  "Primary Visual (R)", "Posterior Cingulate (R)"
+)
+sig_roi_labels_dHCP <- c(
+  "Parietal Associative (R)", "Parietal Associative (L)", "Prefrontal Associative (R)",
+  "Prefrontal Associative (L)", "Temporal Associative (R)", "Primary Auditory (L)",
+  "Primary Motor (L)", "Primary Somatosensory (R)", "Primary Visual (R)",
+  "Primary Visual (L)", "Posterior Cingulate (R)", "Posterior Cingulate (L)",
+  "Hippocampus (R)"
+)
+
+strip_titles <- function(p) {
+  p +
+    labs(title = NULL, subtitle = NULL) +
+    theme(
+      plot.margin = margin(5, 5, 20, 5)
+    )
+}
+
+make_two_panel <- function(p_left, p_right, filename, width = 12, height = 5) {
+  
+  p_left2  <- strip_titles(p_left)
+  p_right2 <- strip_titles(p_right)
+  
+  fig <- p_left2 + p_right2 +
+    plot_layout(
+      ncol   = 2,
+      guides = "collect",
+      widths = c(1, 1)
+    ) &
+    theme(legend.position = "right")
+  
+  fig <- fig + plot_annotation(tag_levels = "A")
+  
+  ggsave(
+    here("outputs", "figures", filename),
+    fig, width = width, height = height, dpi = 600
+  )
+  
+  fig
+}
+```
+
+## Supplementary Figure S4: perinatal variables
+
+```{r}
+p_heat_prem_BLS  <- readRDS(here("outputs", "figures", "p_heat_prem_BLS_noleg.rds"))
+p_heat_prem_dHCP <- readRDS(here("outputs", "figures", "p_heat_dHCP.rds"))
+
+fig3 <- make_two_panel(
+  p_heat_prem_dHCP,
+  p_heat_prem_BLS,
+  filename = "Figure3_prematurity_heatmaps_final.tiff",
+  width = 12,
+  height = 5
+)
+```
+
+## Figure 4: early environment
+
+```{r}
+p_heat_full_factorSES_BLS_noleg <- readRDS(here("outputs", "figures", "p_heat_full_factorSES_BLS_noleg.rds"))
+p_heat_SES_dHCP                 <- readRDS(here("outputs", "figures", "p_heat_SES_dHCP.rds"))
+
+fig5 <- make_two_panel(
+  p_heat_SES_dHCP,
+  p_heat_full_factorSES_BLS_noleg,
+  filename = "Figure5_earlyEnv_heatmaps_final.tiff",
+  width = 12,
+  height = 5
+)
+```
+
+## Figure 5: cognition
+
+```{r}
+p_heat_cogAdult_BLS <- readRDS(here("outputs", "figures", "p_heat_cog_BLS_noleg.rds"))
+p_heat_CP_to_cog    <- readRDS(here("outputs", "figures", "p_heat_cog_dHCP.rds"))
+
+fig7 <- make_two_panel(
+  p_heat_CP_to_cog,
+  p_heat_cogAdult_BLS,
+  filename = "Figure7_CP_to_cognition_heatmaps_final.tiff",
+  width = 12,
+  height = 5
+)
+```

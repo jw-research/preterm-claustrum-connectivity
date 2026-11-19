@@ -1,0 +1,352 @@
+---
+title: "Claustrum Connectivity in Prematurity CP-CD Agreement"
+author: "Jil Wendt"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+Agreement between CP- and CD-based group effects (Supplementary control and robustness analyses, section 1). Covariate-adjusted Cohen's d per target ROI (from `Revision_adjusted_effect_sizes.qmd`) are compared between metrics across ROIs (Pearson's r, Spearman's rho, sign agreement, Bland-Altman limits of agreement), and each ROI is classified by FDR-corrected significance for CP and CD. Subject-level concordance between CP and CD values is computed per ROI.
+
+- Input: `data/effect_size_trajectory_CP_ADJ.csv`, `data/effect_size_trajectory_CD_ADJ.csv` (adjusted d, from `Revision_adjusted_effect_sizes.qmd`); `data/adults_harmonized.csv`, `data/dHCP_CP_cog_ses.csv`, `data/dHCP_CD_cog_ses.csv`
+- Outputs:
+  - `outputs/tables/Revision_agreement_CPvsCD_adj_<date>.csv`: agreement statistics (results/CP_CD_agreement_summary.csv)
+  - `outputs/tables/Revision_agreement_CPvsCD_adj_TableR1<date>.csv`: classification per ROI (results/CP_CD_agreement_table.csv)
+  - `outputs/tables/Revision_agreement_CPvsCD_subject_concordance_<date>.csv`: subject-level concordance (results/CP_CD_subject_concordance.csv)
+  - `outputs/figures/Revision_FigR1_CP_CD_agreement_adj_<date>.png`: Supplementary Figure S7
+
+## 1 Setup
+
+```{r}
+#| label: setup
+#| include: false
+
+library(dplyr)
+library(tidyr)
+library(readr)
+library(ggplot2)
+library(patchwork)
+library(here)
+
+fig_dir <- here::here("outputs", "figures")
+tab_dir <- here::here("outputs", "tables")
+
+save_plot_png <- function(plot, filename, width = 9, height = 7, dpi = 300) {
+  outfile <- file.path(fig_dir, paste0(filename, "_", format(Sys.Date()), ".png"))
+  ggplot2::ggsave(outfile, plot = plot, width = width, height = height, dpi = dpi, bg = "white")
+  message("Plot saved to: ", outfile)
+  invisible(outfile)
+}
+
+cohort_labels <- c(dHCP = "Neonates (dHCP)", BLS = "Adults (BLS)")
+```
+
+### Lookup tables
+
+```{r}
+roi_labels <- c(
+  cp_ac_occ_l_ipsi  = "Occipital Associative (L)",
+  cp_ac_occ_r_ipsi  = "Occipital Associative (R)",
+  cp_ac_par_l_ipsi  = "Parietal Associative (L)",
+  cp_ac_par_r_ipsi  = "Parietal Associative (R)",
+  cp_ac_pfc_l_ipsi  = "Prefrontal Associative (L)",
+  cp_ac_pfc_r_ipsi  = "Prefrontal Associative (R)",
+  cp_ac_temp_l_ipsi = "Temporal Associative (L)",
+  cp_ac_temp_r_ipsi = "Temporal Associative (R)",
+  cp_c_pos_l_ipsi   = "Posterior Cingulate (L)",
+  cp_c_pos_r_ipsi   = "Posterior Cingulate (R)",
+  cp_c_ant_l_ipsi   = "Anterior Cingulate (L)",
+  cp_c_ant_r_ipsi   = "Anterior Cingulate (R)",
+  cp_pc_aud_l_ipsi  = "Primary Auditory (L)",
+  cp_pc_aud_r_ipsi  = "Primary Auditory (R)",
+  cp_pc_mot_l_ipsi  = "Primary Motor (L)",
+  cp_pc_mot_r_ipsi  = "Primary Motor (R)",
+  cp_pc_sens_l_ipsi = "Primary Somatosensory (L)",
+  cp_pc_sens_r_ipsi = "Primary Somatosensory (R)",
+  cp_pc_vis_l_ipsi  = "Primary Visual (L)",
+  cp_pc_vis_r_ipsi  = "Primary Visual (R)",
+  cp_sc_hip_l_ipsi  = "Hippocampus (L)",
+  cp_ac_hip_r_ipsi  = "Hippocampus (R)"
+)
+
+roi_labels_dHCP <- c(
+  l_claustrum_ac_occ_l  = "Occipital Associative (L)",
+  r_claustrum_ac_occ_r  = "Occipital Associative (R)",
+  l_claustrum_ac_par_l  = "Parietal Associative (L)",
+  r_claustrum_ac_par_r  = "Parietal Associative (R)",
+  l_claustrum_ac_pfc_l  = "Prefrontal Associative (L)",
+  r_claustrum_ac_pfc_r  = "Prefrontal Associative (R)",
+  l_claustrum_ac_temp_l = "Temporal Associative (L)",
+  r_claustrum_ac_temp_r = "Temporal Associative (R)",
+  l_claustrum_c_pos_l   = "Posterior Cingulate (L)",
+  r_claustrum_c_pos_r   = "Posterior Cingulate (R)",
+  l_claustrum_c_ant_l   = "Anterior Cingulate (L)",
+  r_claustrum_c_ant_r   = "Anterior Cingulate (R)",
+  l_claustrum_pc_aud_l  = "Primary Auditory (L)",
+  r_claustrum_pc_aud_r  = "Primary Auditory (R)",
+  l_claustrum_pc_mot_l  = "Primary Motor (L)",
+  r_claustrum_pc_mot_r  = "Primary Motor (R)",
+  l_claustrum_pc_sens_l = "Primary Somatosensory (L)",
+  r_claustrum_pc_sens_r = "Primary Somatosensory (R)",
+  l_claustrum_pc_vis_l  = "Primary Visual (L)",
+  r_claustrum_pc_vis_r  = "Primary Visual (R)",
+  l_claustrum_sc_hip_l  = "Hippocampus (L)",
+  r_claustrum_sc_hip_r  = "Hippocampus (R)"
+)
+```
+
+### Load data BLS
+
+```{r}
+# --- Load data ---
+dat <- read_delim(
+  here("data", "adults_harmonized.csv"),
+  delim = ";",
+  trim_ws = TRUE,
+  locale = locale(decimal_mark = ","),
+  na = c(""," ","NA", "NaN", "n/a", ".", "-9999","999"),
+  col_types = cols(
+    Subject = col_character(),
+    ID      = col_character()
+  ),
+  guess_max = 10000
+) |> janitor::clean_names()
+
+# --- recode and name important factors ---
+dat <- dat %>%
+  mutate(
+    group = factor(case_when(
+      groupcode == 0 ~ "FT",
+      groupcode == 1 ~ "PT",
+      TRUE ~ NA_character_
+    ), levels = c("FT", "PT")),
+    
+    sex = factor(case_when(
+      sex == 1 ~ "Male",
+      sex == 2 ~ "Female",
+      TRUE ~ NA_character_
+    ), levels = c("Female", "Male"))
+  )
+
+# --- create sub-datasets --- 
+drop_vars <- c("id") 
+
+final_dat_CP <- dat %>%
+  dplyr::select(-starts_with("cd_"), -all_of(drop_vars))
+
+final_dat_CD <- dat %>%
+  dplyr::select(-starts_with("cp_"), -all_of(drop_vars))
+```
+
+### Load data dHCP
+
+```{r}
+load_dHCP <- function(file) {
+  readr::read_csv(here("data", file), na = c("", "NA", "NaN"),
+                  show_col_types = FALSE) |>
+    janitor::clean_names() |>
+    dplyr::mutate(
+      group = factor(dplyr::recode(group, term = "FT", pre = "PT"),
+                     levels = c("FT", "PT")),
+      sex   = factor(sex, levels = c("Female", "Male"))
+    )
+}
+
+dat_dHCP_cp <- load_dHCP("dHCP_CP_cog_ses.csv")
+dat_dHCP_cd <- load_dHCP("dHCP_CD_cog_ses.csv")
+
+roi_cols_dHCP <- grep("_claustrum_", names(dat_dHCP_cp), value = TRUE)
+
+# --- check data loaded ---
+stopifnot(
+  length(roi_cols_dHCP) == 22,
+  setequal(roi_cols_dHCP, names(roi_labels_dHCP)),
+  identical(dat_dHCP_cp$subject_id, dat_dHCP_cd$subject_id),
+  identical(dat_dHCP_cp$group,      dat_dHCP_cd$group),
+  !anyNA(dat_dHCP_cp$group),
+  !anyNA(dat_dHCP_cp[roi_cols_dHCP]), !anyNA(dat_dHCP_cd[roi_cols_dHCP])
+)
+```
+
+### Load adjusted effect size data
+
+```{r}
+d_cp <- read_csv2(here("data", paste0("effect_size_trajectory_CP_ADJ.csv")),
+                  show_col_types = FALSE)
+d_cd <- read_csv2(here("data", paste0("effect_size_trajectory_CD_ADJ.csv")),
+                  show_col_types = FALSE)
+
+ES <- inner_join(d_cp, d_cd, by = "ROI", suffix = c("_cp", "_cd"))
+stopifnot(nrow(ES) == 22, !anyNA(ES))
+
+ES_long <- bind_rows(lapply(c("dHCP", "BLS"), function(co) {
+  tibble(ROI    = ES$ROI,
+         cohort = co,
+         d_cp   = ES[[paste0(co, "_d_cp")]],
+         d_cd   = ES[[paste0(co, "_d_cd")]],
+         p_cp   = ES[[paste0(co, "_p_cp")]],
+         p_cd   = ES[[paste0(co, "_p_cd")]])
+})) |>
+  mutate(cohort = factor(cohort, levels = names(cohort_labels)),
+         mean_d = (d_cp + d_cd) / 2,
+         gap    = d_cp - d_cd)
+```
+
+# 2 Quantify agreement between CP and CD effect size
+
+- sign convention: positive d \<-\> lower connectivity in PT individuals
+
+- slope = OLS slope from lm(d_CD \~ d_CP)
+
+### Summary statistics
+
+```{r}
+#| label: agreement
+agree_tbl <- ES_long |>
+  group_by(cohort) |>
+  summarise(
+    n              = n(),
+    pearson_r      = cor(d_cp, d_cd),
+    r_ci_lo        = cor.test(d_cp, d_cd)$conf.int[1],
+    r_ci_hi        = cor.test(d_cp, d_cd)$conf.int[2],
+    spearman_rho   = cor(d_cp, d_cd, method = "spearman"),
+    sign_agree     = sum(sign(d_cp) == sign(d_cd)),
+    slope_cd_on_cp = unname(coef(lm(d_cd ~ d_cp))[2]),
+    mean_gap       = mean(gap),
+    loa_lo         = mean(gap) - 1.96 * sd(gap),
+    loa_hi         = mean(gap) + 1.96 * sd(gap),
+    .groups = "drop"
+  )
+```
+
+### Classification per ROI (Supplementary Table S19)
+
+Based on the FDR-corrected ANCOVAs for CP (Table S2) and CD (Table S3): both, CP only, CD only, or neither significant; direction in parentheses.
+
+```{r}
+#| label: classification
+dir_lab <- function(d) ifelse(d > 0, "FT > PT", "FT < PT")
+
+class_tbl <- ES_long |>
+  mutate(
+    sig_cp = p_cp < 0.05,
+    sig_cd = p_cd < 0.05,
+    agreement = case_when(
+      sig_cp & sig_cd & sign(d_cp) == sign(d_cd) ~ paste0("Both (", dir_lab(d_cp), ")"),
+      sig_cp & sig_cd                            ~ "Both, opposite directions",
+      sig_cp                                     ~ paste0("CP only (", dir_lab(d_cp), ")"),
+      sig_cd                                     ~ paste0("CD only (", dir_lab(d_cd), ")"),
+      TRUE                                       ~ "Neither"
+    )
+  )
+
+tab_r1 <- class_tbl |>
+  transmute(ROI, cohort,
+            d_cp = round(d_cp, 3), d_cd = round(d_cd, 3), agreement) |>
+  pivot_wider(names_from = cohort, values_from = c(d_cp, d_cd, agreement),
+              names_glue = "{cohort}_{.value}") |>
+  select(ROI, starts_with("dHCP_"), starts_with("BLS_"))
+```
+
+### Figures
+
+```{r}
+#| label: figures
+p_scatter <- ggplot(ES_long, aes(d_cp, d_cd)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
+  geom_hline(yintercept = 0, colour = "grey75") +
+  geom_vline(xintercept = 0, colour = "grey75") +
+  geom_point(size = 2) +
+  facet_wrap(~ cohort, labeller = as_labeller(cohort_labels)) +
+  coord_equal() +
+  labs(x = "Adjusted Cohen's d (CP)", y = "Adjusted Cohen's d (CD)") +
+  theme_minimal(base_size = 11)
+
+p_ba <- ggplot(ES_long, aes(mean_d, gap)) +
+  geom_hline(yintercept = 0, colour = "grey75") +
+  geom_hline(data = agree_tbl, aes(yintercept = mean_gap)) +
+  geom_hline(data = agree_tbl, aes(yintercept = loa_lo), linetype = "dashed") +
+  geom_hline(data = agree_tbl, aes(yintercept = loa_hi), linetype = "dashed") +
+  geom_point(size = 2) +
+  facet_wrap(~ cohort, labeller = as_labeller(cohort_labels)) +
+  labs(x = "Mean of d (CP, CD)", y = "d (CP) - d (CD)") +
+  theme_minimal(base_size = 11)
+
+p_fig <- (p_scatter / p_ba) + plot_annotation(tag_levels = "A")
+```
+
+#### Save figures and tables
+
+```{r}
+#| label: save
+stamp <- format(Sys.Date())
+save_plot_png(p_fig, "Revision_FigR1_CP_CD_agreement_adj", width = 9, height = 9)
+write_csv2(agree_tbl, file.path(tab_dir, paste0("Revision_agreement_CPvsCD_adj_", stamp, ".csv")))
+write_csv2(tab_r1,    file.path(tab_dir, paste0("Revision_agreement_CPvsCD_adj_TableR1", stamp, ".csv")))
+```
+
+# 3 Quantify subject-level agreement between CP and CD values
+
+### Subject-level concordance
+
+```{r}
+#| label: subject-level
+subj_concordance <- function(dat_cp, dat_cd, rois, labels, id, cohort) {
+  stopifnot(identical(dat_cp[[id]], dat_cd[[id]]), all(rois %in% names(labels)))
+
+  long_cp <- dat_cp |>
+    select(subject = all_of(id), group, all_of(rois)) |>
+    pivot_longer(all_of(rois), names_to = "key", values_to = "cp")
+  long_cd <- dat_cd |>
+    select(subject = all_of(id), all_of(rois)) |>
+    pivot_longer(all_of(rois), names_to = "key", values_to = "cd")
+
+  subj <- inner_join(long_cp, long_cd, by = c("subject", "key")) |>
+    filter(!is.na(cp), !is.na(cd))
+  stopifnot(nrow(subj) == nrow(drop_na(long_cp)))
+
+  # z-score each metric within ROI
+  subj <- subj |>
+    mutate(ROI = unname(labels[key]), cohort = cohort) |>
+    group_by(key) |>
+    mutate(z_cp   = as.numeric(scale(cp)),
+           z_cd   = as.numeric(scale(cd)),
+           mean_z = (z_cp + z_cd) / 2,
+           gap    = z_cp - z_cd) |>
+    ungroup()
+  stopifnot(!anyNA(subj$ROI))
+
+  conc <- subj |>
+    group_by(cohort, ROI) |>
+    summarise(
+      n               = n(),
+      pearson_r       = cor(cp, cd),
+      spearman_rho    = cor(cp, cd, method = "spearman"),
+      loa             = 1.96 * sd(gap),
+      gap_FT_minus_PT = mean(gap[group == "FT"]) - mean(gap[group == "PT"]),
+      .groups = "drop") |>
+    arrange(pearson_r)
+
+  list(subj = subj, conc = conc)
+}
+
+bls_cp <- final_dat_CP |> rename_with(~ sub("^cp_", "", .x), starts_with("cp_"))
+bls_cd <- final_dat_CD |> rename_with(~ sub("^cd_", "", .x), starts_with("cd_"))
+labels_bls <- setNames(roi_labels, sub("^cp_", "", names(roi_labels)))
+
+res_bls  <- subj_concordance(bls_cp, bls_cd, names(labels_bls), labels_bls,
+                             id = "subject", cohort = "BLS")
+res_dhcp <- subj_concordance(dat_dHCP_cp, dat_dHCP_cd, names(roi_labels_dHCP), roi_labels_dHCP,
+                             id = "subject_id", cohort = "dHCP")
+
+conc_subj <- bind_rows(res_bls$conc, res_dhcp$conc)
+```
+
+#### Save table
+
+```{r}
+#| label: save-subject
+write_csv2(conc_subj, file.path(tab_dir, paste0("Revision_agreement_CPvsCD_subject_concordance_",
+                                                format(Sys.Date()), ".csv")))
+```

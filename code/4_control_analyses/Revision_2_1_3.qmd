@@ -1,0 +1,95 @@
+---
+title: "Claustrum Connectivity in Prematurity Cognition GLMs after Outlier Exclusion (BLS)"
+author: "Jil Wendt"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+Outlier robustness of the associations between CP and adult cognition in preterm-born adults (BLS cohort; Supplementary control and robustness analyses, section 5). The cognition GLMs (outcome \~ CP + age at scan + sex) are re-run after excluding outlier CP observations (IQR criterion, per ROI).
+
+- Input: `checkpoints/eda_checkpoint.rds` and `checkpoints/glm_checkpoint.rds` (from `eda.qmd` and `GLM_analyses_essential.qmd`)
+- Output: `outputs/tables/Revision_cognition_outliers-excluded_<date>.csv` (results/cognition_GLM_BLS_outliers_excluded.csv)
+
+# Setup
+
+```{r}
+#| label: setup
+#| include: false
+
+library(tidyverse)
+library(here)
+library(broom)
+
+tab_dir <- here::here("outputs", "tables")
+```
+
+#### Load checkpoints
+
+```{r}
+eda <- readRDS(here::here("checkpoints", "eda_checkpoint.rds"))
+glm <- readRDS(here::here("checkpoints", "glm_checkpoint.rds"))
+
+list2env(eda, envir = .GlobalEnv)
+list2env(glm, envir = .GlobalEnv)
+rm(eda, glm)
+```
+
+# Run analysis
+
+### 1 GLM helper function
+
+```{r}
+run_outcome_vs_each_cp <- function(outcome, family, data = dat_PT_cog){
+  map_dfr(cp_vars, function(cp_col){
+    fml <- as.formula(paste(outcome, "~", paste(c(cp_col, covars), collapse = " + ")))
+    df  <- data[, all.vars(fml)] %>% na.omit()
+    if (nrow(df) < 10) return(NULL)
+    fit <- lm(fml, data = df); td <- tidy(fit); gl <- glance(fit)
+    row <- td %>% filter(term == cp_col); if (!nrow(row)) return(NULL)
+    tibble(
+      family = family, outcome = outcome, dv_label = outcome,
+      predictor = cp_col, estimate = row$estimate, std.error = row$std.error,
+      ci_lo = estimate - 1.96 * std.error, ci_hi = estimate + 1.96 * std.error,
+      t_value = row$statistic, p.value = row$p.value,
+      r.squared = gl$r.squared, adj.r.squared = gl$adj.r.squared, n = nrow(df)
+    )
+  }) %>%
+  mutate(outcome = factor(outcome)) %>%
+  group_by(outcome) %>%
+  mutate(p_adj_fdr_within_outcome = p.adjust(p.value, "fdr")) %>%
+  ungroup()
+}
+```
+
+### 2 Build datasets
+
+```{r}
+stopifnot(exists("final_dat_CP_excl"))   # created in eda.qmd
+
+dat_PT_excl <- final_dat_CP_excl %>% filter(group == "PT")
+
+dat_PT_cog_excl <- dat_PT_excl %>%
+  dplyr::mutate(
+    dplyr::across(dplyr::all_of(c(cp_vars, cog_all)), ~ {
+      if (is.factor(.)) suppressWarnings(as.numeric(as.character(.))) else as.numeric(.)
+    }),
+    dplyr::across(dplyr::all_of(cp_vars), ~ as.numeric(scale(.))) #z-scoring cp vars
+  )
+```
+
+### 3 Re-run cognition GLM with outliers excluded
+
+```{r}
+# run GLM for each cognitive outcome against each CP ROI
+res_single_excl <- bind_rows(
+  run_outcome_vs_each_cp("wie_gesiq",      "FSIQ", data = dat_PT_cog_excl),
+  run_outcome_vs_each_cp("ant_alerting",   "ANT",  data = dat_PT_cog_excl),
+  run_outcome_vs_each_cp("ant_orienting",  "ANT",  data = dat_PT_cog_excl),
+  run_outcome_vs_each_cp("ant_congruency", "ANT",  data = dat_PT_cog_excl)
+) %>% arrange(outcome, p_adj_fdr_within_outcome, p.value)
+
+# save output:
+write_csv2(res_single_excl, file.path(tab_dir, paste0("Revision_cognition_outliers-excluded_", format(Sys.Date()), ".csv")))
+```
